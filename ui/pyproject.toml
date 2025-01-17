@@ -1,0 +1,19 @@
+[project]
+name = "aelf-code-generator"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "tanuj-aelf",email = "tanuj.singh@aelf.io"}
+]
+readme = "README.md"
+requires-python = ">=3.9,<4.0"
+dependencies = [
+    "copilotkit (==0.1.31a4)",
+    "fastapi (>=0.115.6,<0.116.0)",
+    "uvicorn (>=0.34.0,<0.35.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
