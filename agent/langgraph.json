@@ -1,0 +1,17 @@
+{
+  "python_version": "3.12",
+  "dockerfile_lines": [
+    "RUN pip install aiohttp==3.11.11",
+    "RUN pip install --no-cache-dir poetry",
+    "WORKDIR /api",
+    "COPY . .",
+    "RUN poetry config virtualenvs.create false",
+    "RUN poetry install --no-interaction --no-ansi --no-root",
+    "RUN poetry install --no-interaction --no-ansi"
+  ],
+  "dependencies": ["."],
+  "graphs": {
+    "aelf_code_generator": "./aelf_code_generator/agent.py:graph"
+  },
+  "env": ".env"
+}
