@@ -1,3 +1,22 @@
 @tailwind base;
 @tailwind components;
-@tailwind utilities; 
+@tailwind utilities;
+
+.copilotKitInput {
+    border-radius: 0;
+}
+
+.main-content {
+    width: calc(100vw - 500px);
+}
+
+.file-result-container {
+    height: 100%;
+    max-height: calc(100vh - 120px);
+}
+
+.monaco-editor .margin,
+.monaco-editor-background {
+    /* background-color: #111827  !important */
+    background-color: rgb(31 41 55 / 1) !important;
+}
