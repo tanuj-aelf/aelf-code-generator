@@ -11,6 +11,7 @@ from copilotkit.langchain import copilotkit_customize_config
 from pydantic import BaseModel, Field
 from aelf_code_generator.state import AgentState
 from aelf_code_generator.model import get_model
+import json
 
 SYSTEM_PROMPT = """You are an AELF smart contract generation assistant. Help users define their smart contract requirements.
 Extract key information about the type of contract they want (e.g., lottery, crowdfunding, NFT marketplace).
@@ -73,110 +74,80 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command[Litera
     # Initialize state with default values
     state = initialize_state(state)
     
-    config = copilotkit_customize_config(
-        config,
-        emit_intermediate_state=[{
-            "state_key": "user_requirements",
-            "tool": "ProcessRequirements",
-            "tool_argument": "requirements",
-        }],
-    )
+    # Prepare message history
+    messages = [SystemMessage(content=SYSTEM_PROMPT)]
+    
+    if state["messages"]:
+        messages.extend(state["messages"])
 
     model = get_model(state)
     
-    # Prepare message history for Gemini
-    messages = []
-    if state["messages"]:
-        for msg in state["messages"]:
-            if isinstance(msg, HumanMessage):
-                messages.append(msg)
-            elif isinstance(msg, AIMessage):
-                messages.append(msg)
-            # Skip other message types that Gemini doesn't support
-    
-    # Add system prompt as a prefix to the first message if there are messages
-    if messages:
-        first_msg = messages[0]
-        if isinstance(first_msg, HumanMessage):
-            messages[0] = HumanMessage(content=f"{SYSTEM_PROMPT}\n\nUser: {first_msg.content}")
-    else:
-        # If no messages, start with system prompt
-        messages = [HumanMessage(content=SYSTEM_PROMPT)]
-
+    # Bind the ProcessRequirements tool and get response
     response = await model.bind_tools(
         [ProcessRequirements],
-    ).ainvoke(messages, config)
+    ).ainvoke(messages)
 
     ai_message = cast(AIMessage, response)
     
-    # If the AI is asking clarifying questions, continue chat
+    # Update messages list with AI's response
+    updated_messages = state["messages"] + [ai_message]
+    
+    # If no tool calls, continue chat
     if not ai_message.tool_calls:
-        state["messages"].append(ai_message)
         return Command(
             goto="chat",
-            update={"messages": state["messages"]}
+            update={"messages": updated_messages}
         )
 
     try:
-        # Get the tool call arguments
-        tool_args = ai_message.tool_calls[0]["args"]
+        tool_call = ai_message.tool_calls[0]
         
-        # Handle different response formats
-        if isinstance(tool_args, str):
-            import json
-            tool_args = json.loads(tool_args)
-        
-        # Extract requirements based on the structure
-        if "requirements" in tool_args:
-            requirements = tool_args["requirements"]
+        # Parse tool arguments
+        if isinstance(tool_call["args"], str):
+            tool_args = json.loads(tool_call["args"])
         else:
-            requirements = tool_args
+            tool_args = tool_call["args"]
             
-        # Convert to dict if it's a Pydantic model
+        # Ensure we have the requirements structure
+        if isinstance(tool_args, dict):
+            if "requirements" in tool_args:
+                requirements = tool_args["requirements"]
+            else:
+                requirements = tool_args
+        else:
+            raise ValueError("Invalid tool arguments format")
+            
+        # Convert Pydantic model to dict if needed
         if hasattr(requirements, "dict"):
             requirements = requirements.dict()
-        elif isinstance(requirements, str):
-            requirements = json.loads(requirements)
             
-        # Ensure we have a dictionary with the required fields
-        if not isinstance(requirements, dict):
-            raise ValueError(f"Invalid requirements format: {type(requirements)}")
+        # Validate requirements structure
+        if not all(key in requirements for key in ["description", "type", "features"]):
+            raise ValueError("Missing required fields in requirements")
             
-        # Update state with requirements, using safe get operations
-        state["user_requirements"] = (
-            requirements.get("description", "") 
-            if isinstance(requirements, dict) 
-            else str(requirements)
-        )
-        state["contract_type"] = (
-            requirements.get("type", "") 
-            if isinstance(requirements, dict) 
-            else ""
-        )
-        state["contract_features"] = (
-            requirements.get("features", []) 
-            if isinstance(requirements, dict) 
-            else []
+        # Create tool message
+        tool_message = ToolMessage(
+            tool_call_id=tool_call["id"],
+            content="Requirements processed successfully."
         )
         
-        state["messages"].append(ai_message)
-        state["messages"].append(ToolMessage(
-            tool_call_id=ai_message.tool_calls[0]["id"],
-            content="Requirements processed successfully."
-        ))
-
+        # Update state atomically with all fields
         return Command(
             goto="contract_analyzer",
-            update=state
+            update={
+                "messages": updated_messages + [tool_message],
+                "user_requirements": requirements["description"],
+                "contract_type": requirements["type"],
+                "contract_features": requirements["features"]
+            }
         )
         
     except Exception as e:
-        # If there's any error processing the requirements, continue the chat
+        print(f"Error processing requirements: {str(e)}")
         error_message = HumanMessage(
-            content="I apologize, but I couldn't process those requirements properly. Could you please provide more details about what kind of smart contract you need?"
+            content=f"I couldn't process the requirements properly. Please provide more specific details about your smart contract needs. Error: {str(e)}"
         )
-        state["messages"].append(error_message)
         return Command(
             goto="chat",
-            update=state
+            update={"messages": updated_messages + [error_message]}
         ) 
