@@ -18,8 +18,8 @@ def create_agent() -> StateGraph:
     
     Flow:
     1. Chat -> Get requirements
-    2. Contract Analyzer -> Analyze requirements and find examples
-    3. Code Generator -> Generate code
+    2. Contract Analyzer -> Analyze requirements
+    3. Code Generator -> Generate code or return to chat
     """
     # Initialize the workflow graph
     workflow = StateGraph(AgentState)
@@ -36,7 +36,7 @@ def create_agent() -> StateGraph:
     # Set the entry point
     workflow.set_entry_point("chat")
 
-    # Add conditional edge to end
+    # Add conditional edges from code generator
     workflow.add_conditional_edges(
         "code_generator",
         lambda x: "__end__" if x.get("is_complete", False) else "chat"
