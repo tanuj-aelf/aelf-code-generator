@@ -29,11 +29,13 @@ def initialize_generator_state(state: AgentState) -> AgentState:
         state["generated_code"] = ""
     if "generation_logs" not in state:
         state["generation_logs"] = []
+    if "is_complete" not in state:
+        state["is_complete"] = False
     return state
 
-async def code_generator_node(state: AgentState, config: RunnableConfig) -> Command[Literal["review_code"]]:
+async def code_generator_node(state: AgentState, config: RunnableConfig) -> Command[Literal["chat", "__end__"]]:
     """
-    Generates smart contract code based on selected template and requirements.
+    Generates smart contract code based on requirements and analysis.
     """
     # Initialize state
     state = initialize_generator_state(state)
@@ -55,15 +57,11 @@ async def code_generator_node(state: AgentState, config: RunnableConfig) -> Comm
             1. User Requirements: {state.get('user_requirements', 'Not specified')}
             2. Contract Type: {state.get('contract_type', 'Not specified')}
             3. Requested Features: {', '.join(state.get('contract_features', ['Not specified']))}
-            4. Selected Template: {state.get('selected_template', 'Not specified')}
-            5. GitHub Analysis: {state.get('github_analysis', 'Not available')}
+            4. GitHub Analysis: {state.get('github_analysis', 'Not available')}
             
             Follow AELF smart contract best practices and patterns.
             Include all necessary imports and dependencies.
             Ensure the contract is secure and efficient.
-            
-            If there are any improvement suggestions from previous iterations, address them:
-            {state.get('improvement_feedback', 'No previous feedback')}
             """
         )
     ]
@@ -75,9 +73,10 @@ async def code_generator_node(state: AgentState, config: RunnableConfig) -> Comm
     ai_message = cast(AIMessage, response)
     
     if not ai_message.tool_calls:
-        # If no code was generated, log the error and continue
+        # If no code was generated, log the error and go back to chat
         state["generation_logs"].append("Failed to generate code: No tool calls found")
-        return Command(goto="review_code", update=state)
+        state["is_complete"] = False
+        return Command(goto="chat", update=state)
     
     # Update state with generated code
     tool_args = ai_message.tool_calls[0]["args"]
@@ -88,4 +87,7 @@ async def code_generator_node(state: AgentState, config: RunnableConfig) -> Comm
     state["generated_code"] = tool_args.get("code", "")
     state["messages"].append(ai_message)
     
-    return Command(goto="review_code", update=state) 
+    # Mark as complete if code was generated successfully
+    state["is_complete"] = True
+    
+    return Command(goto="__end__", update=state) 
