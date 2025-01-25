@@ -1,5 +1,5 @@
 """
-Demo module for running the AELF smart contract generator agent.
+This module provides a demo interface for the AELF smart contract code generator.
 """
 
 import os
@@ -8,28 +8,22 @@ load_dotenv()  # This loads the environment variables from .env
 
 from fastapi import FastAPI, Body
 import uvicorn
-from copilotkit.integrations.fastapi import add_fastapi_endpoint
-from copilotkit import CopilotKitSDK, LangGraphAgent
+from langchain_core.messages import HumanMessage
 from aelf_code_generator.agent import graph
 
 app = FastAPI()
-sdk = CopilotKitSDK(
-    agents=[
-        LangGraphAgent(
-            name="aelf_code_generator",
-            description="AELF smart contract code generator agent. Provide a plain text description of your dApp and I will generate a complete smart contract.",
-            graph=graph,
-        )
-    ],
-)
-
-add_fastapi_endpoint(app, sdk, "/copilotkit")
 
 # Add direct text input endpoint
 @app.post("/generate")
-async def generate_contract(description: str = Body(..., description="Plain text description of your dApp")):
+async def generate_contract(description: str = Body(..., description="Describe your smart contract requirements in plain text. For example:\n- I need a voting contract where users can create proposals and vote\n- Create an NFT marketplace with listing and bidding features\n- Token contract with mint, burn, and transfer functions\n- DAO governance contract with proposal voting and treasury management")):
     """Generate smart contract from text description."""
-    result = await graph.ainvoke(description)
+    # Create initial state with the human message
+    state = {
+        "messages": [HumanMessage(content=description)]
+    }
+    
+    # Run the graph
+    result = await graph.ainvoke(state)
     return result
 
 # Add health check route

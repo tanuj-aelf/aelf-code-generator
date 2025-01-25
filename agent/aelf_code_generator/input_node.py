@@ -1,61 +1,48 @@
 """
-This module handles the initial text input for dApp description.
+This module defines the requirement collector node for gathering initial smart contract requirements.
 """
 
-from typing import Dict, Any, Literal
+from typing import Dict, Any, Literal, Optional, TypedDict, Annotated
 from langchain_core.messages import HumanMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
-from aelf_code_generator.validation import validate_input
+from pydantic import BaseModel, Field
 
-INITIAL_PROMPT = """Describe your dApp requirements in plain text. For example:
-- "I need a voting contract where users can create proposals and vote"
-- "Create an NFT marketplace with listing and bidding features"
-- "Token contract with mint, burn, and transfer functions"
-- "DAO governance contract with proposal voting and treasury management"
-"""
+class RequirementInput(BaseModel):
+    """Input schema for the requirement collector node."""
+    text: str = Field(
+        description="Describe your smart contract requirements in plain text",
+        examples=[
+            "I need a voting contract where users can create proposals and vote",
+            "Create an NFT marketplace with listing and bidding features",
+            "Token contract with mint, burn, and transfer functions",
+            "DAO governance contract with proposal voting and treasury management"
+        ]
+    )
 
-async def input_node(state: Dict[str, Any], config: RunnableConfig) -> Command[Literal["chat"]]:
+async def requirement_collector_node(
+    state: Dict[str, Any],
+    config: RunnableConfig
+) -> Command[Literal["chat"]]:
     """
-    Input node for collecting dApp description.
-    Only handles text input and forwards to chat node.
+    Collects initial requirements from user input and prepares the state for chat.
+    
+    Args:
+        state: Current workflow state
+        config: Configuration for the runnable
     """
-    # Initialize messages if not present
+    # Initialize messages list if not present
     if "messages" not in state:
         state["messages"] = []
+    
+    # Get input from state
+    input_data = state.get("input")
+    if input_data and hasattr(input_data, "text"):
+        message = HumanMessage(content=input_data.text)
+        state["messages"].append(message)
+    
+    # Always proceed to chat node
+    return Command(goto="chat", update=state)
 
-    # Get and validate input
-    input_data = config.get("input", "")
-    try:
-        if input_data:
-            clean_input = validate_input(input_data)
-            # Add the message to history
-            state["messages"].append(
-                HumanMessage(content=clean_input)
-            )
-            # Forward to chat node
-            return Command(
-                goto="chat",
-                update={
-                    "messages": state["messages"]
-                }
-            )
-    except ValueError as e:
-        return Command(
-            goto="input",
-            update={
-                "messages": [
-                    HumanMessage(content=str(e))
-                ]
-            }
-        )
-
-    # If no input, show initial prompt
-    return Command(
-        goto="input",
-        update={
-            "messages": [
-                HumanMessage(content=INITIAL_PROMPT)
-            ]
-        }
-    ) 
+# Export the node
+__all__ = ["requirement_collector_node", "RequirementInput"] 
