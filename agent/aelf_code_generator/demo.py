@@ -6,7 +6,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()  # This loads the environment variables from .env
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Body
 import uvicorn
 from copilotkit.integrations.fastapi import add_fastapi_endpoint
 from copilotkit import CopilotKitSDK, LangGraphAgent
@@ -17,13 +17,20 @@ sdk = CopilotKitSDK(
     agents=[
         LangGraphAgent(
             name="aelf_code_generator",
-            description="AELF smart contract code generator agent.",
+            description="AELF smart contract code generator agent. Provide a plain text description of your dApp and I will generate a complete smart contract.",
             graph=graph,
         )
     ],
 )
 
 add_fastapi_endpoint(app, sdk, "/copilotkit")
+
+# Add direct text input endpoint
+@app.post("/generate")
+async def generate_contract(description: str = Body(..., description="Plain text description of your dApp")):
+    """Generate smart contract from text description."""
+    result = await graph.ainvoke(description)
+    return result
 
 # Add health check route
 @app.get("/health")

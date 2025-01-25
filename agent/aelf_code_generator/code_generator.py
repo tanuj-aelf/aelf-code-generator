@@ -8,7 +8,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain.tools import tool
 from langgraph.types import Command
 from pydantic import BaseModel, Field
-from aelf_code_generator.state import AgentState
+from aelf_code_generator.state import AgentState, STATE_KEYS
 from aelf_code_generator.model import get_model
 import json
 
@@ -122,24 +122,83 @@ async def code_generator_node(state: AgentState, config: RunnableConfig) -> Comm
     
     # Validate required state fields
     required_fields = [
-        "user_requirements", "contract_type", "contract_features",
-        "contract_methods", "state_variables", "contract_events"
+        STATE_KEYS["user_requirements"],
+        STATE_KEYS["contract_type"],
+        STATE_KEYS["contract_features"],
+        STATE_KEYS["contract_methods"],
+        STATE_KEYS["state_variables"],
+        STATE_KEYS["contract_events"]
     ]
     missing_fields = [field for field in required_fields if field not in state]
     if missing_fields:
         state_update = {
             "messages": state["messages"] + [
-                HumanMessage(content=f"Missing required contract information: {', '.join(missing_fields)}. Please provide complete requirements.")
+                HumanMessage(content=f"""Missing required contract information: {', '.join(missing_fields)}. 
+Please provide the following details:
+
+1. Contract Methods:
+{json.dumps([{
+    "name": "MethodName",
+    "description": "What the method does",
+    "params": [{"name": "param1", "type": "string", "description": "param description"}],
+    "returns": {"type": "returnType", "description": "return description"},
+    "access_control": ["roles"],
+    "state_changes": ["changes"],
+    "events": ["events"],
+    "validation": ["rules"]
+}], indent=2)}
+
+2. State Variables:
+{json.dumps([{
+    "name": "variableName",
+    "type": "variableType",
+    "description": "variable description",
+    "is_mapping": True
+}], indent=2)}
+
+3. Events:
+{json.dumps([{
+    "name": "EventName",
+    "description": "event description",
+    "parameters": [{
+        "name": "param1",
+        "type": "paramType",
+        "description": "param description",
+        "indexed": True
+    }]
+}], indent=2)}""")
             ],
             "generation_logs": state["generation_logs"] + ["Missing required fields"],
             "is_complete": False
         }
         return Command(goto="chat", update=state_update)
 
-    model = get_model(state)
-    
-    # Prepare detailed contract generation prompt
-    contract_prompt = f"""Generate a complete AELF smart contract with these specifications:
+    try:
+        # Parse and validate contract methods
+        methods = state.get("contract_methods", [])
+        if isinstance(methods, str):
+            methods = json.loads(methods)
+        if not methods:
+            raise ValueError("No contract methods defined")
+
+        # Parse and validate state variables
+        state_vars = state.get("state_variables", [])
+        if isinstance(state_vars, str):
+            state_vars = json.loads(state_vars)
+        if not state_vars:
+            raise ValueError("No state variables defined")
+
+        # Parse and validate events
+        events = state.get("contract_events", [])
+        if isinstance(events, str):
+            events = json.loads(events)
+        if not events:
+            raise ValueError("No events defined")
+
+        model = get_model(state)
+        
+        # Prepare detailed contract generation prompt
+        contract_prompt = f"""Generate a complete AELF smart contract with these specifications:
 
 1. Contract Purpose:
 {state["user_requirements"]}
@@ -151,13 +210,13 @@ async def code_generator_node(state: AgentState, config: RunnableConfig) -> Comm
 {chr(10).join(f'- {feature}' for feature in state["contract_features"])}
 
 4. Contract Methods:
-{json.dumps(state["contract_methods"], indent=2)}
+{json.dumps(methods, indent=2)}
 
 5. State Variables:
-{json.dumps(state["state_variables"], indent=2)}
+{json.dumps(state_vars, indent=2)}
 
 6. Events:
-{json.dumps(state["contract_events"], indent=2)}
+{json.dumps(events, indent=2)}
 
 Generate production-ready C# code following AELF patterns:
 1. Use proper AELF base classes and attributes
@@ -171,18 +230,18 @@ Generate production-ready C# code following AELF patterns:
 
 The code must be complete and deployable."""
 
-    # Prepare protobuf generation prompt
-    proto_prompt = f"""Generate complete protobuf definitions for the contract:
+        # Prepare protobuf generation prompt
+        proto_prompt = f"""Generate complete protobuf definitions for the contract:
 
 1. Service Interface:
-{chr(10).join(f'- {method["name"]}: {method["description"]}' for method in state["contract_methods"])}
+{chr(10).join(f'- {method["name"]}: {method["description"]}' for method in methods)}
 
 2. Message Types:
-{chr(10).join(f'- {method["name"]}Input: {json.dumps(method["params"])}' for method in state["contract_methods"])}
-{chr(10).join(f'- {method["name"]}Output: {json.dumps(method["returns"])}' for method in state["contract_methods"])}
+{chr(10).join(f'- {method["name"]}Input: {json.dumps(method["params"])}' for method in methods)}
+{chr(10).join(f'- {method["name"]}Output: {json.dumps(method["returns"])}' for method in methods)}
 
 3. Events:
-{chr(10).join(f'- {event["name"]}: {json.dumps(event["parameters"])}' for event in state["contract_events"])}
+{chr(10).join(f'- {event["name"]}: {json.dumps(event["parameters"])}' for event in events)}
 
 Follow AELF protobuf conventions and best practices:
 1. Use proper field numbering
@@ -190,14 +249,14 @@ Follow AELF protobuf conventions and best practices:
 3. Include AELF-specific options
 4. Define nested types as needed"""
 
-    # Prepare state class generation prompt
-    state_prompt = f"""Generate C# state classes for the contract:
+        # Prepare state class generation prompt
+        state_prompt = f"""Generate C# state classes for the contract:
 
 1. State Variables:
-{json.dumps(state["state_variables"], indent=2)}
+{json.dumps(state_vars, indent=2)}
 
 2. State Access Patterns:
-{chr(10).join(f'- {method["name"]}: {json.dumps(method["state_changes"])}' for method in state["contract_methods"] if method["state_changes"])}
+{chr(10).join(f'- {method["name"]}: {json.dumps(method.get("state_changes", []))}' for method in methods)}
 
 3. Requirements:
 - Create proper state container class
@@ -209,7 +268,6 @@ Follow AELF protobuf conventions and best practices:
 
 Follow AELF state management patterns and best practices."""
 
-    try:
         # Create ContractCodeInput with the enhanced prompts
         code_input = ContractCodeInput(
             code=contract_prompt,
@@ -221,7 +279,16 @@ Follow AELF state management patterns and best practices."""
         response = await model.bind_tools(
             [GenerateContract],
         ).ainvoke([
-            HumanMessage(content=f"Generate AELF smart contract code components using the following specifications:\n\n{json.dumps(code_input.dict(), indent=2)}")
+            HumanMessage(content=f"""Generate AELF smart contract code components using the following specifications:
+
+Contract Purpose: {state["user_requirements"]}
+Contract Type: {state["contract_type"]}
+
+Methods: {len(methods)} defined
+State Variables: {len(state_vars)} defined
+Events: {len(events)} defined
+
+Detailed specifications are provided in the code_input parameter.""")
         ])
         
         ai_message = cast(AIMessage, response)
@@ -261,7 +328,43 @@ Follow AELF state management patterns and best practices."""
     except Exception as e:
         error_msg = f"Error generating code: {str(e)}"
         return Command(goto="chat", update={
-            "messages": state["messages"] + [HumanMessage(content=f"An error occurred: {error_msg}")],
+            "messages": state["messages"] + [
+                HumanMessage(content=f"""An error occurred while generating the code. Please provide the contract specifications in the following format:
+
+1. Contract Methods:
+{json.dumps([{
+    "name": "MethodName",
+    "description": "What the method does",
+    "params": [{"name": "param1", "type": "string", "description": "param description"}],
+    "returns": {"type": "returnType", "description": "return description"},
+    "access_control": ["roles"],
+    "state_changes": ["changes"],
+    "events": ["events"],
+    "validation": ["rules"]
+}], indent=2)}
+
+2. State Variables:
+{json.dumps([{
+    "name": "variableName",
+    "type": "variableType",
+    "description": "variable description",
+    "is_mapping": True
+}], indent=2)}
+
+3. Events:
+{json.dumps([{
+    "name": "EventName",
+    "description": "event description",
+    "parameters": [{
+        "name": "param1",
+        "type": "paramType",
+        "description": "param description",
+        "indexed": True
+    }]
+}], indent=2)}
+
+Error: {error_msg}""")
+            ],
             "generation_logs": state["generation_logs"] + [error_msg],
             "is_complete": False
         }) 

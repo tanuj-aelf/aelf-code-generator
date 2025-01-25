@@ -2,67 +2,48 @@
 This module defines the main agent workflow for AELF smart contract code generation.
 """
 
-from typing import TypedDict, Annotated, Sequence, cast
-from langchain_core.messages import HumanMessage
+from typing import TypedDict, Dict, List, Any, Annotated, Union
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.checkpoint.memory import MemorySaver
-from aelf_code_generator.state import AgentState
+from langgraph.graph.message import add_messages
+from aelf_code_generator.state import InternalState
+from aelf_code_generator.input_node import input_node
 from aelf_code_generator.chat import chat_node
 from aelf_code_generator.github_analyzer import github_analyzer_node
 from aelf_code_generator.code_generator import code_generator_node
 
-def create_agent() -> StateGraph:
-    """
-    Creates the agent workflow graph for AELF smart contract code generation.
-    
-    Flow:
-    1. Chat -> Get requirements
-    2. Contract Analyzer -> Analyze requirements
-    3. Code Generator -> Generate code or return to chat
-    """
-    # Initialize the workflow graph
+class AgentState(TypedDict):
+    """State type for the agent workflow."""
+    messages: List[BaseMessage]  # List of conversation messages
+
+def create_agent():
+    """Create the agent workflow."""
+    # Define the workflow graph with text input
     workflow = StateGraph(AgentState)
 
     # Add nodes to the graph
-    workflow.add_node("chat", chat_node)
-    workflow.add_node("contract_analyzer", contract_analyzer)
+    workflow.add_node("input", input_node)  # Text input node
+    workflow.add_node("chat", chat_node)  # Analysis node
+    workflow.add_node("contract_analyzer", github_analyzer_node)
     workflow.add_node("code_generator", code_generator_node)
 
+    # Set entry point to input node with text input
+    workflow.set_entry_point("input")
+
     # Define linear flow
-    workflow.add_edge("chat", "contract_analyzer")
-    workflow.add_edge("contract_analyzer", "code_generator")
-    
-    # Set the entry point
-    workflow.set_entry_point("chat")
+    workflow.add_edge("input", "chat")  # Input -> Chat
+    workflow.add_edge("chat", "contract_analyzer")  # Chat -> Analysis
+    workflow.add_edge("contract_analyzer", "code_generator")  # Analysis -> Generation
+    workflow.add_edge("code_generator", END)  # Generation -> End
 
-    # Add conditional edges from code generator
-    workflow.add_conditional_edges(
-        "code_generator",
-        lambda x: "__end__" if x.get("is_complete", False) else "chat"
-    )
+    # Create and compile the graph with memory
+    memory = MemorySaver()
+    return workflow.compile(checkpointer=memory)
 
-    return workflow
+# Create the graph
+graph = create_agent()
 
-async def contract_analyzer(state: AgentState, config: dict) -> AgentState:
-    """
-    Analyzes the contract requirements and updates the state with analysis results.
-    """
-    # Initialize required state fields
-    if "github_analysis" not in state:
-        state["github_analysis"] = ""
-    if "is_complete" not in state:
-        state["is_complete"] = False
-        
-    # Run GitHub analysis
-    state = await github_analyzer_node(state, config)
-    
-    return state
-
-# Create and compile the graph with memory
-memory = MemorySaver()
-workflow = create_agent()
-graph = workflow.compile(checkpointer=memory)
-
-# Export the graph for use in other modules
+# Export the graph
 __all__ = ["graph"] 

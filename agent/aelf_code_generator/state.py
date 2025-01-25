@@ -1,50 +1,42 @@
 """
-This module defines the state management for the AELF smart contract code generator agent.
+This module defines the state types for the AELF smart contract code generation workflow.
 """
 
-from typing import List, TypedDict, Optional
-from langgraph.graph import MessagesState
+from typing import TypedDict, List, Dict, Any, Optional
+from langchain_core.messages import BaseMessage
 
-class ContractTemplate(TypedDict):
-    """Represents a smart contract template."""
-    name: str
-    description: str
-    features: List[str]
-    source_path: str
-    code: str
-
-class GithubResource(TypedDict):
-    """Represents a GitHub resource from the AELF samples repository."""
-    url: str
-    title: str
-    description: str
-    content: Optional[str]
-
-class CodeFeedback(TypedDict):
-    """Represents feedback on the generated code."""
-    improvements: List[str]
-    security_issues: List[str]
-    gas_optimizations: List[str]
-    missing_features: List[str]
-    suggestions: List[str]
-
-class Log(TypedDict):
-    """Represents a log of an action performed by the agent."""
-    message: str
-    done: bool
-
-class AgentState(MessagesState):
+class InternalState(TypedDict, total=False):
     """
-    State management for the AELF smart contract code generator agent.
+    Internal state fields that should not appear in the UI.
+    These fields are populated by the nodes during processing.
     """
-    model: str
-    user_requirements: Optional[str]  # User's description of the desired smart contract
-    contract_type: Optional[str]  # Type of contract (e.g., "lottery", "crowdfunding")
-    contract_features: List[str]  # Specific features requested by user
-    contract_patterns: List[str]  # Identified patterns from analysis
-    selected_template: Optional[ContractTemplate]
-    generated_contract: Optional[str]
-    github_resources: List[GithubResource]
-    improvement_feedback: Optional[CodeFeedback]  # Feedback for code improvements
-    iteration_count: int  # Track number of improvement iterations
-    logs: List[Log] 
+    user_requirements: Optional[Dict[str, Any]]  # Extracted requirements from text
+    contract_type: Optional[str]  # Type of contract
+    contract_features: Optional[List[str]]  # List of features
+    contract_methods: Optional[List[Dict[str, Any]]]  # Method specifications
+    state_variables: Optional[List[Dict[str, Any]]]  # State variable definitions
+    contract_events: Optional[List[Dict[str, Any]]]  # Event definitions
+    generated_code: Optional[str]  # Generated contract code
+    generation_logs: Optional[List[str]]  # Generation process logs
+    is_complete: Optional[bool]  # Whether generation is complete
+
+class AgentState(TypedDict):
+    """
+    State type for the agent workflow.
+    Only exposes messages for conversation history.
+    All other state is handled internally by the nodes.
+    """
+    messages: List[BaseMessage]  # List of conversation messages
+
+# State key mappings for internal use
+STATE_KEYS = {
+    "user_requirements": "user_requirements",
+    "contract_type": "contract_type",
+    "contract_features": "contract_features",
+    "contract_methods": "contract_methods",
+    "state_variables": "state_variables",
+    "contract_events": "contract_events",
+    "generated_code": "generated_code",
+    "generation_logs": "generation_logs",
+    "is_complete": "is_complete"
+} 
