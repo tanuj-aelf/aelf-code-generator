@@ -2,45 +2,113 @@
 This module defines the main agent workflow for AELF smart contract code generation.
 """
 
-from typing import TypedDict, Dict, List, Any, Annotated, Optional
-from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
+from typing import Dict, List, Any, Annotated, TypedDict
+from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.checkpoint.memory import MemorySaver
-from langgraph.graph.message import add_messages
-from aelf_code_generator.state import InternalState, STATE_KEYS
-from aelf_code_generator.chat import chat_node
-from aelf_code_generator.github_analyzer import github_analyzer_node
-from aelf_code_generator.code_generator import code_generator_node
+from aelf_code_generator.model import get_model
+from aelf_code_generator.types import AgentState, get_default_state
 
-class AgentState(TypedDict):
-    """State type for the agent workflow."""
-    messages: Annotated[List[BaseMessage], add_messages]  # List of conversation messages
+SYSTEM_PROMPT = """You are an expert AELF smart contract developer. Your task is to analyze the dApp description and generate a complete smart contract implementation.
 
-def create_agent():
-    """Create the agent workflow."""
-    # Define the workflow graph
-    workflow = StateGraph(AgentState)
+Follow these steps in order:
+1. Analyze the requirements and identify:
+   - Contract type and purpose
+   - Core features and functionality
+   - Required methods and their specifications
+   - State variables and storage needs
+   - Events and their parameters
+   - Access control and security requirements
 
-    # Add nodes to the graph
-    workflow.add_node("chat", chat_node)
-    workflow.add_node("contract_analyzer", github_analyzer_node)
-    workflow.add_node("code_generator", code_generator_node)
+2. Generate complete, production-ready code including:
+   - Main contract class in C# with proper AELF base classes
+   - State management classes with proper mappings
+   - Protobuf service and message definitions
+   - Event declarations and emissions
+   - Access control implementation
+   - Input validation and error handling
+   - XML documentation
 
-    # Set entry point to chat
-    workflow.set_entry_point("chat")
+Make reasonable assumptions for any missing details based on common blockchain patterns.
+Format the code output in clear code blocks:
+- C# contract code in ```csharp blocks
+- State classes in ```csharp blocks
+- Protobuf definitions in ```protobuf blocks
 
-    # Define linear flow
-    workflow.add_edge("chat", "contract_analyzer")
-    workflow.add_edge("contract_analyzer", "code_generator")
-    workflow.add_edge("code_generator", END)
+Ensure the code follows AELF best practices and is ready for deployment."""
 
-    # Create and compile the graph with memory
-    memory = MemorySaver()
-    return workflow.compile(checkpointer=memory)
+async def process_contract(state: AgentState) -> AgentState:
+    """Process the dApp description and generate smart contract code."""
+    try:
+        if state.get("is_complete"):
+            return state
 
-# Create the graph
-graph = create_agent()
+        # Get model
+        model = get_model(state)
+        
+        # Generate complete analysis and code
+        messages = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            HumanMessage(content=state["input"])
+        ]
+        
+        response = await model.ainvoke(messages)
+        content = response.content
+        
+        # Extract analysis (everything before first code block)
+        analysis = content.split("```")[0].strip()
+        
+        # Parse code blocks
+        components = {
+            "contract": "",
+            "state": "",
+            "proto": ""
+        }
+        
+        current_component = None
+        for line in content.split("\n"):
+            if "```csharp" in line or "```c#" in line:
+                current_component = "contract" if "contract" not in components["contract"] else "state"
+            elif "```protobuf" in line:
+                current_component = "proto"
+            elif "```" in line:
+                current_component = None
+            elif current_component:
+                components[current_component] += line + "\n"
+        
+        # Update state with results
+        state["output"] = {
+            "contract": components["contract"].strip(),
+            "state": components["state"].strip(),
+            "proto": components["proto"].strip(),
+            "analysis": analysis
+        }
+        state["is_complete"] = True
+        
+        return state
+        
+    except Exception as e:
+        # In case of error, return empty results with error message
+        state["output"] = {
+            "contract": "",
+            "state": "",
+            "proto": "",
+            "analysis": f"Error generating contract: {str(e)}"
+        }
+        state["is_complete"] = True  # Set to True to prevent recursion
+        return state
 
-# Export the graph
+# Define workflow
+workflow = StateGraph(AgentState)
+workflow.add_node("process", process_contract)
+
+# Set entry point and connect to end
+workflow.set_entry_point("process")
+workflow.add_edge("process", END)  # Always proceed to END to prevent recursion
+
+# Create memory saver and compile graph
+memory = MemorySaver()
+graph = workflow.compile(checkpointer=memory)
+
+# Export
 __all__ = ["graph"] 
