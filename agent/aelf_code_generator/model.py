@@ -5,7 +5,7 @@ This module provides model configuration for the AELF smart contract code genera
 import os
 from typing import cast, Any
 from langchain_core.language_models.chat_models import BaseChatModel
-from aelf_code_generator.state import AgentState
+from aelf_code_generator.types import AgentState
 
 def get_model(state: AgentState) -> BaseChatModel:
     """

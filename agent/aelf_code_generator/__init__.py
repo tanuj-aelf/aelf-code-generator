@@ -1,9 +1,9 @@
 """
-AELF Smart Contract Code Generator Agent
+AELF Smart Contract Code Generator.
 """
 
-from aelf_code_generator.state import AgentState
+from aelf_code_generator.types import AgentState, get_default_state
 from aelf_code_generator.agent import graph
+from aelf_code_generator.demo import app
 
-__version__ = "0.1.0"
-__all__ = ["graph", "AgentState"] 
+__all__ = ["graph", "AgentState", "get_default_state", "app"] 

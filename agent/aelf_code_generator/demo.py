@@ -6,27 +6,39 @@ import os
 from dotenv import load_dotenv
 load_dotenv()  # This loads the environment variables from .env
 
-from fastapi import FastAPI, Body
+from fastapi import FastAPI, Body, HTTPException
 import uvicorn
-from langchain_core.messages import HumanMessage
-from aelf_code_generator.agent import graph
+from aelf_code_generator.agent import graph, get_default_state
 
 app = FastAPI()
 
-# Add direct text input endpoint
 @app.post("/generate")
 async def generate_contract(description: str = Body(..., description="Describe your smart contract requirements in plain text. For example:\n- I need a voting contract where users can create proposals and vote\n- Create an NFT marketplace with listing and bidding features\n- Token contract with mint, burn, and transfer functions\n- DAO governance contract with proposal voting and treasury management")):
     """Generate smart contract from text description."""
-    # Create initial state with the human message
-    state = {
-        "messages": [HumanMessage(content=description)]
-    }
-    
-    # Run the graph
-    result = await graph.ainvoke(state)
-    return result
+    try:
+        # Create initial state with description
+        state = get_default_state()
+        state["input"] = description
+        
+        # Run the graph
+        result = await graph.ainvoke(state)
+        
+        # Check for errors
+        if not any(result["output"].values()):
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to generate contract. Please try again with a more detailed description."
+            )
+        
+        # Return the generated outputs
+        return result["output"]
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
-# Add health check route
 @app.get("/health")
 def health():
     """Health check."""
