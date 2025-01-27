@@ -8,8 +8,9 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
+from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
 from aelf_code_generator.model import get_model
-from aelf_code_generator.types import AgentState, ContractOutput, get_default_state
+from aelf_code_generator.types import AgentState, ContractOutput, CodebaseInsight, get_default_state
 
 ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Your task is to analyze the dApp description and provide a detailed analysis.
 
@@ -24,7 +25,29 @@ Analyze the requirements and identify:
 Provide a structured analysis that will be used to generate the smart contract code in the next step.
 Do not generate any code in this step, focus only on the analysis."""
 
-CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis, generate a complete smart contract implementation.
+CODEBASE_ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and sample codebase insights, analyze and extract best practices and patterns.
+
+Focus on:
+1. Project structure and organization
+2. Common coding patterns in AELF smart contracts
+3. Implementation guidelines specific to the requirements
+4. Relevant sample contracts that can be used as reference
+
+Provide structured insights that will guide the code generation process."""
+
+CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation.
+
+Follow these implementation guidelines:
+{implementation_guidelines}
+
+Common coding patterns to use:
+{coding_patterns}
+
+Project structure to follow:
+{project_structure}
+
+Relevant sample references:
+{relevant_samples}
 
 Generate complete, production-ready code including:
 - Main contract class in C# with proper AELF base classes
@@ -42,9 +65,27 @@ Format the code output in clear code blocks:
 
 Ensure the code follows AELF best practices and is ready for deployment."""
 
-async def analyze_requirements(state: AgentState) -> Command[Literal["generate", "__end__"]]:
+async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
     try:
+        # Initialize internal state if not present
+        if "_internal" not in state:
+            state["_internal"] = {
+                "analysis": "",
+                "codebase_insights": {
+                    "project_structure": "",
+                    "coding_patterns": "",
+                    "relevant_samples": [],
+                    "implementation_guidelines": ""
+                },
+                "output": {
+                    "contract": "",
+                    "state": "",
+                    "proto": "",
+                    "analysis": ""
+                }
+            }
+            
         # Get model with state
         model = get_model(state)
         
@@ -62,13 +103,17 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["generate",
             
         # Return command to move to next state
         return Command(
-            goto="generate",
+            goto="analyze_codebase",
             update={
-                "output": {
-                    "contract": "",
-                    "state": "",
-                    "proto": "",
-                    "analysis": analysis
+                "_internal": {
+                    "analysis": analysis,
+                    "codebase_insights": state["_internal"]["codebase_insights"],
+                    "output": {
+                        "contract": "",
+                        "state": "",
+                        "proto": "",
+                        "analysis": analysis
+                    }
                 }
             }
         )
@@ -78,30 +123,125 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["generate",
         return Command(
             goto="__end__",
             update={
-                "output": {
-                    "contract": "",
-                    "state": "",
-                    "proto": "",
-                    "analysis": error_msg
+                "_internal": {
+                    "analysis": error_msg,
+                    "codebase_insights": {
+                        "project_structure": "",
+                        "coding_patterns": "",
+                        "relevant_samples": [],
+                        "implementation_guidelines": ""
+                    },
+                    "output": {
+                        "contract": "",
+                        "state": "",
+                        "proto": "",
+                        "analysis": error_msg
+                    }
+                }
+            }
+        )
+
+async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__end__"]]:
+    """Analyze AELF sample codebases to gather implementation insights."""
+    try:
+        # Initialize Tavily search
+        search = TavilySearchAPIWrapper()
+        
+        # Prepare search queries based on analysis
+        analysis = state["_internal"]["analysis"]
+        queries = [
+            f"site:github.com/AElfProject/aelf-samples {analysis} smart contract implementation",
+            "site:github.com/AElfProject/aelf-samples smart contract structure patterns best practices",
+            "site:github.com/AElfProject/aelf-samples protobuf contract state management"
+        ]
+        
+        # Gather insights from sample codebases
+        all_results = []
+        for query in queries:
+            results = search.results(query)
+            all_results.extend(results)
+        
+        # Get model to analyze search results
+        model = get_model(state)
+        
+        # Generate codebase insights
+        messages = [
+            SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
+            HumanMessage(content=f"""
+Analysis: {analysis}
+
+Search Results:
+{all_results}
+
+Please analyze these results and provide structured insights for code generation.
+""")
+        ]
+        
+        response = await model.ainvoke(messages)
+        insights = response.content.strip()
+        
+        if not insights:
+            raise ValueError("Codebase analysis failed - empty response")
+            
+        # Parse insights into structured format
+        insights_dict = {
+            "project_structure": "Standard AELF project structure with contract, state, and proto files",
+            "coding_patterns": insights.split("Common coding patterns:")[1].split("\n")[0] if "Common coding patterns:" in insights else "",
+            "relevant_samples": [r["url"] for r in all_results if "github.com" in r["url"]],
+            "implementation_guidelines": insights
+        }
+        
+        # Return command to move to next state
+        return Command(
+            goto="generate",
+            update={
+                "_internal": {
+                    **state["_internal"],
+                    "codebase_insights": insights_dict
+                }
+            }
+        )
+        
+    except Exception as e:
+        error_msg = f"Error analyzing codebase: {str(e)}"
+        return Command(
+            goto="__end__",
+            update={
+                "_internal": {
+                    **state["_internal"],
+                    "codebase_insights": {
+                        "project_structure": "",
+                        "coding_patterns": "",
+                        "relevant_samples": [],
+                        "implementation_guidelines": error_msg
+                    }
                 }
             }
         )
 
 async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
-    """Generate smart contract code based on the analysis."""
+    """Generate smart contract code based on analysis and codebase insights."""
     try:
-        # Get analysis from previous state
-        analysis = state["output"]["analysis"]
-        if not analysis:
-            raise ValueError("No analysis available for code generation")
+        # Get analysis and insights
+        internal = state["_internal"]
+        analysis = internal["analysis"]
+        insights = internal["codebase_insights"]
+        
+        if not analysis or not insights["implementation_guidelines"]:
+            raise ValueError("Missing analysis or codebase insights")
             
         # Get model with state
         model = get_model(state)
         
-        # Generate code based on analysis
+        # Generate code based on analysis and insights
         messages = [
-            SystemMessage(content=CODE_GENERATION_PROMPT),
-            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract code based on this analysis.")
+            SystemMessage(content=CODE_GENERATION_PROMPT.format(
+                implementation_guidelines=insights["implementation_guidelines"],
+                coding_patterns=insights["coding_patterns"],
+                project_structure=insights["project_structure"],
+                relevant_samples="\n".join(insights["relevant_samples"])
+            )),
+            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract code based on this analysis and insights.")
         ]
         
         response = await model.ainvoke(messages)
@@ -135,11 +275,14 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         return Command(
             goto="__end__",
             update={
-                "output": {
-                    "contract": components["contract"],
-                    "state": components["state"],
-                    "proto": components["proto"],
-                    "analysis": analysis
+                "_internal": {
+                    **state["_internal"],
+                    "output": {
+                        "contract": components["contract"],
+                        "state": components["state"],
+                        "proto": components["proto"],
+                        "analysis": analysis
+                    }
                 }
             }
         )
@@ -149,11 +292,14 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         return Command(
             goto="__end__",
             update={
-                "output": {
-                    "contract": "",
-                    "state": "",
-                    "proto": "",
-                    "analysis": error_msg
+                "_internal": {
+                    **state["_internal"],
+                    "output": {
+                        "contract": "",
+                        "state": "",
+                        "proto": "",
+                        "analysis": error_msg
+                    }
                 }
             }
         )
@@ -162,14 +308,17 @@ def create_agent():
     """Create the agent workflow."""
     workflow = StateGraph(AgentState)
     
-    # Add analysis and code generation nodes
+    # Add nodes for each step
     workflow.add_node("analyze", analyze_requirements)
+    workflow.add_node("analyze_codebase", analyze_codebase)
     workflow.add_node("generate", generate_contract)
     
     # Set entry point and connect nodes
     workflow.set_entry_point("analyze")
-    workflow.add_edge("analyze", "generate")
+    workflow.add_edge("analyze", "analyze_codebase")
     workflow.add_edge("analyze", END)  # In case of analysis error
+    workflow.add_edge("analyze_codebase", "generate")
+    workflow.add_edge("analyze_codebase", END)  # In case of codebase analysis error
     workflow.add_edge("generate", END)
     
     # Compile workflow
