@@ -364,6 +364,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             "reference": dict(empty_code_file),
             "project": dict(empty_code_file)
         }
+        additional_files = []  # List to store additional files
         
         # Parse code blocks
         current_component = None
@@ -371,7 +372,27 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         in_code_block = False
         current_file_type = ""
         
+        # Track if we're inside XML documentation
+        in_xml_doc = False
+        xml_doc_content = []
+        
         for line in content.split("\n"):
+            # Handle XML documentation
+            if "///" in line or "/<" in line:
+                in_xml_doc = True
+                xml_doc_content.append(line)
+                continue
+            elif in_xml_doc and (">" in line or line.strip().endswith("/")):
+                in_xml_doc = False
+                xml_doc_content.append(line)
+                if current_content:
+                    current_content.extend(xml_doc_content)
+                xml_doc_content = []
+                continue
+            elif in_xml_doc:
+                xml_doc_content.append(line)
+                continue
+                
             # Handle code block markers
             if "```" in line:
                 if not in_code_block:
@@ -387,8 +408,18 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 else:
                     # End of code block
                     if current_component and current_content:
-                        components[current_component]["content"] = "\n".join(current_content).strip()
-                        components[current_component]["file_type"] = current_file_type
+                        code_content = "\n".join(current_content).strip()
+                        if current_component in components:
+                            components[current_component]["content"] = code_content
+                            components[current_component]["file_type"] = current_file_type
+                        else:
+                            # Only store non-empty additional files
+                            if code_content and current_file_type:
+                                additional_files.append({
+                                    "content": code_content,
+                                    "file_type": current_file_type,
+                                    "path": components.get(current_component, {}).get("path", "")
+                                })
                     current_content = []
                     current_component = None
                     current_file_type = ""
@@ -397,6 +428,11 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             
             # Handle file path markers
             if ("// src/" in line or "// " in line or "<!-- " in line):
+                # Skip if it's just a comment about the file path in code
+                if in_code_block and not line.strip().startswith("//") and not line.strip().startswith("<!--"):
+                    current_content.append(line)
+                    continue
+                    
                 file_path = (
                     line.replace("// ", "")
                     .replace("<!-- ", "")
@@ -426,6 +462,15 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                     current_component = "reference"
                     components[current_component]["path"] = file_path
                     components[current_component]["file_type"] = "csharp"
+                else:
+                    # Only create additional file entry if it's a real file path
+                    if "." in file_path and "/" in file_path:
+                        current_component = "additional"
+                        additional_files.append({
+                            "content": "",  # Will be filled when code block ends
+                            "file_type": "",  # Will be set when code block starts
+                            "path": file_path
+                        })
                 continue
             
             # Collect content if in a code block and have a current component
@@ -434,17 +479,39 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         
         # Add last component if any
         if current_component and current_content:
-            components[current_component]["content"] = "\n".join(current_content).strip()
-            components[current_component]["file_type"] = current_file_type
+            code_content = "\n".join(current_content).strip()
+            if current_component in components:
+                components[current_component]["content"] = code_content
+                components[current_component]["file_type"] = current_file_type
+            else:
+                # Only store non-empty additional files
+                if code_content and current_file_type:
+                    additional_files.append({
+                        "content": code_content,
+                        "file_type": current_file_type,
+                        "path": components.get(current_component, {}).get("path", "")
+                    })
+        
+        # Filter out empty or invalid additional files
+        additional_files = [
+            f for f in additional_files 
+            if f["content"] and f["file_type"] and not any(
+                invalid in f["path"].lower() 
+                for invalid in ["<summary>", "</summary>", "<param", "</param>", "<returns>", "</returns>"]
+            )
+        ]
         
         # Ensure all components have content
-        if not any(c["content"] for c in components.values()):
+        if not any(c["content"] for c in components.values()) and not additional_files:
             raise ValueError("No code components were successfully parsed")
         
         # Log the components for debugging
         print("Generated components:")
         for key, value in components.items():
             print(f"{key}: {len(value['content'])} characters, type: {value['file_type']}, path: {value['path']}")
+        print("Additional files:")
+        for file in additional_files:
+            print(f"Additional: {len(file['content'])} characters, type: {file['file_type']}, path: {file['path']}")
         
         # Return command with results
         return Command(
@@ -458,6 +525,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         "proto": components["proto"],  # Proto definitions with metadata
                         "reference": components["reference"],  # Reference code with metadata
                         "project": components["project"],  # Project configuration with metadata
+                        "metadata": additional_files,  # Additional files with metadata
                         "analysis": analysis  # Analysis output
                     }
                 }
@@ -479,6 +547,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         "proto": empty_code_file,
                         "reference": empty_code_file,
                         "project": empty_code_file,
+                        "metadata": [],  # Empty list for additional files
                         "analysis": error_msg
                     }
                 }
