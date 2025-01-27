@@ -354,45 +354,78 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             content = getattr(response, 'content', '') or ""
             if not content:
                 raise ValueError("Code generation timed out and no partial response available")
-        
-        # Initialize components with empty strings
+                
+        # Initialize components with empty CodeFile structures
+        empty_code_file = {"content": "", "file_type": "", "path": ""}
         components = {
-            "contract": "",
-            "state": "",
-            "proto": "",
-            "reference": "",
-            "project": ""
+            "contract": dict(empty_code_file),
+            "state": dict(empty_code_file),
+            "proto": dict(empty_code_file),
+            "reference": dict(empty_code_file),
+            "project": dict(empty_code_file)
         }
         
         # Parse code blocks
         current_component = None
         current_content = []
         in_code_block = False
+        current_file_type = ""
         
         for line in content.split("\n"):
             # Handle code block markers
             if "```" in line:
-                if in_code_block:
+                if not in_code_block:
+                    # Start of code block - detect language
+                    if "csharp" in line.lower():
+                        current_file_type = "csharp"
+                    elif "protobuf" in line.lower() or "proto" in line.lower():
+                        current_file_type = "proto"
+                    elif "xml" in line.lower():
+                        current_file_type = "xml"
+                    else:
+                        current_file_type = "text"
+                else:
                     # End of code block
                     if current_component and current_content:
-                        components[current_component] = "\n".join(current_content).strip()
+                        components[current_component]["content"] = "\n".join(current_content).strip()
+                        components[current_component]["file_type"] = current_file_type
                     current_content = []
                     current_component = None
+                    current_file_type = ""
                 in_code_block = not in_code_block
                 continue
             
             # Handle file path markers
-            if "// src/" in line or "// " in line:
-                if "ContractName.cs" in line or "TaskContract.cs" in line:
+            if ("// src/" in line or "// " in line or "<!-- " in line):
+                file_path = (
+                    line.replace("// ", "")
+                    .replace("<!-- ", "")
+                    .replace(" -->", "")
+                    .strip()
+                )
+                
+                # First check for project file since it has a different comment style
+                if ".csproj" in line:
+                    current_component = "project"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "xml"
+                # Then check for other files
+                elif "TaskContract.cs" in line or "Contract.cs" in line:
                     current_component = "contract"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
                 elif "ContractState.cs" in line or "State.cs" in line:
                     current_component = "state"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
                 elif ".proto" in line:
                     current_component = "proto"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "proto"
                 elif "ContractReference.cs" in line or "Reference.cs" in line:
                     current_component = "reference"
-                elif ".csproj" in line:
-                    current_component = "project"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
                 continue
             
             # Collect content if in a code block and have a current component
@@ -401,16 +434,17 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         
         # Add last component if any
         if current_component and current_content:
-            components[current_component] = "\n".join(current_content).strip()
+            components[current_component]["content"] = "\n".join(current_content).strip()
+            components[current_component]["file_type"] = current_file_type
         
         # Ensure all components have content
-        if not any(components.values()):
+        if not any(c["content"] for c in components.values()):
             raise ValueError("No code components were successfully parsed")
         
         # Log the components for debugging
         print("Generated components:")
         for key, value in components.items():
-            print(f"{key}: {len(value)} characters")
+            print(f"{key}: {len(value['content'])} characters, type: {value['file_type']}, path: {value['path']}")
         
         # Return command with results
         return Command(
@@ -419,12 +453,12 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 "_internal": {
                     **state["_internal"],
                     "output": {
-                        "contract": components["contract"],
-                        "state": components["state"],
-                        "proto": components["proto"],
-                        "reference": components.get("reference", ""),
-                        "project": components.get("project", ""),
-                        "analysis": analysis
+                        "contract": components["contract"],  # Main contract implementation with metadata
+                        "state": components["state"],  # State class implementation with metadata
+                        "proto": components["proto"],  # Proto definitions with metadata
+                        "reference": components["reference"],  # Reference code with metadata
+                        "project": components["project"],  # Project configuration with metadata
+                        "analysis": analysis  # Analysis output
                     }
                 }
             }
@@ -433,17 +467,18 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
     except Exception as e:
         error_msg = f"Error generating contract: {str(e)}"
         print(f"Generation error: {error_msg}")  # Add logging
+        empty_code_file = {"content": "", "file_type": "", "path": ""}
         return Command(
             goto="__end__",
             update={
                 "_internal": {
                     **state["_internal"],
                     "output": {
-                        "contract": "",
-                        "state": "",
-                        "proto": "",
-                        "reference": "",
-                        "project": "",
+                        "contract": empty_code_file,
+                        "state": empty_code_file,
+                        "proto": empty_code_file,
+                        "reference": empty_code_file,
+                        "project": empty_code_file,
                         "analysis": error_msg
                     }
                 }

@@ -13,15 +13,23 @@ class CodebaseInsight(TypedDict, total=False):
     relevant_samples: List[str]
     implementation_guidelines: str
 
+class CodeFile(TypedDict):
+    """
+    Represents a code file with its content and metadata
+    """
+    content: str  # The actual code content
+    file_type: str  # File type (e.g., "csharp", "proto", "xml")
+    path: str  # Path in project structure (e.g., "src/ContractName.cs")
+
 class ContractOutput(TypedDict, total=False):
     """
     Represents the generated smart contract components
     """
-    contract: str  # Main contract implementation
-    state: str    # State class implementation
-    proto: str    # Protobuf definitions
-    reference: str  # Contract references
-    project: str   # Project configuration
+    contract: CodeFile  # Main contract implementation
+    state: CodeFile    # State class implementation
+    proto: CodeFile    # Protobuf definitions
+    reference: CodeFile  # Contract references
+    project: CodeFile   # Project configuration
     analysis: str  # Requirements analysis
 
 class InternalState(TypedDict, total=False):
