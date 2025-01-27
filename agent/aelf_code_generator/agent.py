@@ -36,7 +36,7 @@ Focus on:
 
 Provide structured insights that will guide the code generation process."""
 
-CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation.
+CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation following AELF's standard project structure.
 
 Follow these implementation guidelines:
 {implementation_guidelines}
@@ -50,21 +50,67 @@ Project structure to follow:
 Relevant sample references:
 {relevant_samples}
 
-Generate complete, production-ready code including:
-- Main contract class in C# with proper AELF base classes
-- State management classes with proper mappings
-- Protobuf service and message definitions
-- Event declarations and emissions
-- Access control implementation
-- Input validation and error handling
-- XML documentation
+Generate the following files with proper implementations:
 
-Format the code output in clear code blocks:
-- C# contract code in ```csharp blocks
-- State classes in ```csharp blocks
-- Protobuf definitions in ```protobuf blocks
+1. Main Contract File (src/ContractName.cs):
+- Inherit from ContractNameContainer.ContractNameBase
+- Implement all contract methods
+- Use proper state management
+- Include XML documentation
+- Add proper access control
+- Include input validation
+- Emit events for state changes
 
-Ensure the code follows AELF best practices and is ready for deployment."""
+2. State Class File (src/ContractState.cs):
+- Define all state variables using proper AELF state types
+- Use MappedState for collections
+- Use SingletonState for single values
+- Include XML documentation
+
+3. Proto File (src/Protobuf/contract/contract_name.proto):
+- Define all messages and services
+- Use proper protobuf types
+- Include method definitions
+- Define events
+- Add proper comments
+
+4. Reference Contract File (src/ContractReference.cs):
+- Define contract reference state
+- Include necessary contract references
+- Add helper methods
+
+5. Project File (ContractName.csproj):
+- Include necessary AELF package references
+- Set proper SDK version
+- Configure protobuf generation
+
+Format each file in a separate code block with proper file path comment:
+```csharp
+// src/ContractName.cs
+... contract implementation ...
+```
+
+```csharp
+// src/ContractState.cs
+... state class implementation ...
+```
+
+```protobuf
+// src/Protobuf/contract/contract_name.proto
+... proto definitions ...
+```
+
+```csharp
+// src/ContractReference.cs
+... contract references ...
+```
+
+```xml
+// ContractName.csproj
+... project configuration ...
+```
+
+Ensure all files follow AELF conventions and best practices."""
 
 async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
@@ -293,7 +339,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 project_structure=insights["project_structure"],
                 relevant_samples="\n".join(insights["relevant_samples"])
             )),
-            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract code based on this analysis and insights.")
+            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract implementation following AELF's project structure.")
         ]
         
         response = await model.ainvoke(messages)
@@ -302,26 +348,45 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         if not content:
             raise ValueError("Code generation failed - empty response")
             
-        # Parse code blocks
+        # Parse code blocks with file paths
         components = {
             "contract": "",
             "state": "",
-            "proto": ""
+            "proto": "",
+            "reference": "",
+            "project": ""
         }
         
         current_component = None
-        for line in content.split("\n"):
-            if "```csharp" in line or "```c#" in line:
-                current_component = "contract" if "contract" not in components["contract"] else "state"
-            elif "```protobuf" in line:
-                current_component = "proto"
-            elif "```" in line:
-                current_component = None
-            elif current_component and current_component in components:
-                components[current_component] += line + "\n"
+        current_content = []
         
-        # Ensure all components have at least empty string values
-        components = {k: v.strip() or "" for k, v in components.items()}
+        for line in content.split("\n"):
+            if "```" in line:
+                if current_component and current_content:
+                    components[current_component] = "\n".join(current_content).strip()
+                current_content = []
+                current_component = None
+                continue
+                
+            if "// src/" in line:
+                if "ContractName.cs" in line:
+                    current_component = "contract"
+                elif "ContractState.cs" in line:
+                    current_component = "state"
+                elif ".proto" in line:
+                    current_component = "proto"
+                elif "ContractReference.cs" in line:
+                    current_component = "reference"
+                elif ".csproj" in line:
+                    current_component = "project"
+                continue
+                
+            if current_component:
+                current_content.append(line)
+        
+        # Add last component if any
+        if current_component and current_content:
+            components[current_component] = "\n".join(current_content).strip()
         
         # Return command with results
         return Command(
@@ -333,7 +398,8 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         "contract": components["contract"],
                         "state": components["state"],
                         "proto": components["proto"],
-                        "analysis": analysis
+                        "reference": components.get("reference", ""),
+                        "project": components.get("project", "")
                     }
                 }
             }
@@ -350,6 +416,8 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         "contract": "",
                         "state": "",
                         "proto": "",
+                        "reference": "",
+                        "project": "",
                         "analysis": error_msg
                     }
                 }

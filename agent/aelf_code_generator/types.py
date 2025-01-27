@@ -17,10 +17,12 @@ class ContractOutput(TypedDict, total=False):
     """
     Represents the generated smart contract components
     """
-    contract: str
-    state: str
-    proto: str
-    analysis: str
+    contract: str  # Main contract implementation
+    state: str    # State class implementation
+    proto: str    # Protobuf definitions
+    reference: str  # Contract references
+    project: str   # Project configuration
+    analysis: str  # Requirements analysis
 
 class InternalState(TypedDict, total=False):
     """Internal state for agent workflow."""
