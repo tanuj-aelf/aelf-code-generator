@@ -1,13 +1,22 @@
 """
-This module defines shared type definitions.
+This module defines the state types for the AELF code generator agent.
 """
 
-from typing import TypedDict, Dict
+from typing import TypedDict
+
+class ContractOutput(TypedDict):
+    """
+    Represents the generated smart contract components
+    """
+    contract: str
+    state: str
+    proto: str
+    analysis: str
 
 class AgentState(TypedDict):
     """State type for the agent workflow."""
     input: str  # Original dApp description
-    output: Dict[str, str]  # Generated outputs
+    output: ContractOutput  # Generated outputs
 
 def get_default_state() -> AgentState:
     """Initialize default state."""
