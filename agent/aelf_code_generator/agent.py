@@ -2,6 +2,7 @@
 This module defines the main agent workflow for AELF smart contract code generation.
 """
 
+import os
 from typing import Dict, List, Any, Annotated, Literal
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -144,30 +145,69 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
 async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__end__"]]:
     """Analyze AELF sample codebases to gather implementation insights."""
     try:
-        # Initialize Tavily search
-        search = TavilySearchAPIWrapper()
+        # Initialize Tavily search with API key
+        tavily_api_key = os.getenv("TAVILY_API_KEY")
+        if not tavily_api_key:
+            raise ValueError("TAVILY_API_KEY not found in environment variables")
+            
+        search = TavilySearchAPIWrapper(tavily_api_key=tavily_api_key)
         
         # Prepare search queries based on analysis
         analysis = state["_internal"]["analysis"]
+        
+        # First try to determine the type of contract from analysis
+        contract_type = "smart contract"  # default
+        if "NFT" in analysis or "token" in analysis.lower():
+            contract_type = "NFT contract"
+        elif "DAO" in analysis.lower():
+            contract_type = "DAO contract"
+        elif "game" in analysis.lower():
+            contract_type = "game contract"
+            
+        # Prepare focused queries
         queries = [
-            f"site:github.com/AElfProject/aelf-samples {analysis} smart contract implementation",
-            "site:github.com/AElfProject/aelf-samples smart contract structure patterns best practices",
-            "site:github.com/AElfProject/aelf-samples protobuf contract state management"
+            f"site:github.com/AElfProject/aelf-samples {contract_type} implementation example",
+            f"site:github.com/AElfProject/aelf-samples {contract_type} structure patterns",
+            "site:github.com/AElfProject/aelf-samples contract state management protobuf example"
         ]
         
         # Gather insights from sample codebases
         all_results = []
         for query in queries:
-            results = search.results(query)
-            all_results.extend(results)
+            try:
+                results = search.results(query, search_depth="advanced", max_results=5)
+                all_results.extend(results)
+            except Exception as e:
+                print(f"Search error for query '{query}': {str(e)}")
+                continue
         
-        # Get model to analyze search results
-        model = get_model(state)
-        
-        # Generate codebase insights
-        messages = [
-            SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
-            HumanMessage(content=f"""
+        if not all_results:
+            # Fallback to model-based insights if search fails
+            insights_dict = {
+                "project_structure": """Standard AELF project structure:
+1. Contract class inheriting from AElfContract
+2. State class for data storage
+3. Proto files for interface definition""",
+                "coding_patterns": """Common AELF patterns:
+1. State management using MapState/SingletonState
+2. Event emission for status changes
+3. Authorization checks using Context.Sender""",
+                "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
+                "implementation_guidelines": """Follow AELF best practices:
+1. Use proper base classes
+2. Implement state management
+3. Add proper access control
+4. Include input validation
+5. Emit events for state changes"""
+            }
+        else:
+            # Get model to analyze search results
+            model = get_model(state)
+            
+            # Generate codebase insights
+            messages = [
+                SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
+                HumanMessage(content=f"""
 Analysis: {analysis}
 
 Search Results:
@@ -175,21 +215,21 @@ Search Results:
 
 Please analyze these results and provide structured insights for code generation.
 """)
-        ]
-        
-        response = await model.ainvoke(messages)
-        insights = response.content.strip()
-        
-        if not insights:
-            raise ValueError("Codebase analysis failed - empty response")
+            ]
             
-        # Parse insights into structured format
-        insights_dict = {
-            "project_structure": "Standard AELF project structure with contract, state, and proto files",
-            "coding_patterns": insights.split("Common coding patterns:")[1].split("\n")[0] if "Common coding patterns:" in insights else "",
-            "relevant_samples": [r["url"] for r in all_results if "github.com" in r["url"]],
-            "implementation_guidelines": insights
-        }
+            response = await model.ainvoke(messages)
+            insights = response.content.strip()
+            
+            if not insights:
+                raise ValueError("Codebase analysis failed - empty response")
+                
+            # Parse insights into structured format
+            insights_dict = {
+                "project_structure": "Standard AELF project structure with contract, state, and proto files",
+                "coding_patterns": insights.split("Common coding patterns:")[1].split("\n")[0] if "Common coding patterns:" in insights else "",
+                "relevant_samples": [r["url"] for r in all_results if "github.com" in r["url"]],
+                "implementation_guidelines": insights
+            }
         
         # Return command to move to next state
         return Command(
@@ -204,16 +244,28 @@ Please analyze these results and provide structured insights for code generation
         
     except Exception as e:
         error_msg = f"Error analyzing codebase: {str(e)}"
+        print(f"Codebase analysis error: {error_msg}")  # Add logging
         return Command(
-            goto="__end__",
+            goto="generate",  # Continue to generate even if codebase analysis fails
             update={
                 "_internal": {
                     **state["_internal"],
                     "codebase_insights": {
-                        "project_structure": "",
-                        "coding_patterns": "",
-                        "relevant_samples": [],
-                        "implementation_guidelines": error_msg
+                        "project_structure": """Standard AELF project structure:
+1. Contract class inheriting from AElfContract
+2. State class for data storage
+3. Proto files for interface definition""",
+                        "coding_patterns": """Common AELF patterns:
+1. State management using MapState/SingletonState
+2. Event emission for status changes
+3. Authorization checks using Context.Sender""",
+                        "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
+                        "implementation_guidelines": """Follow AELF best practices:
+1. Use proper base classes
+2. Implement state management
+3. Add proper access control
+4. Include input validation
+5. Emit events for state changes"""
                     }
                 }
             }
