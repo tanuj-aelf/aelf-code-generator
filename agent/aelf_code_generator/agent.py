@@ -342,13 +342,20 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract implementation following AELF's project structure.")
         ]
         
-        response = await model.ainvoke(messages)
-        content = response.content
-        
-        if not content:
-            raise ValueError("Code generation failed - empty response")
+        try:
+            # Set a longer timeout for code generation
+            response = await model.ainvoke(messages, timeout=150)  # 5 minutes timeout
+            content = response.content
             
-        # Parse code blocks with file paths
+            if not content:
+                raise ValueError("Code generation failed - empty response")
+        except TimeoutError:
+            print("Code generation timed out, using partial response if available")
+            content = getattr(response, 'content', '') or ""
+            if not content:
+                raise ValueError("Code generation timed out and no partial response available")
+        
+        # Initialize components with empty strings
         components = {
             "contract": "",
             "state": "",
@@ -357,36 +364,53 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             "project": ""
         }
         
+        # Parse code blocks
         current_component = None
         current_content = []
+        in_code_block = False
         
         for line in content.split("\n"):
+            # Handle code block markers
             if "```" in line:
-                if current_component and current_content:
-                    components[current_component] = "\n".join(current_content).strip()
-                current_content = []
-                current_component = None
+                if in_code_block:
+                    # End of code block
+                    if current_component and current_content:
+                        components[current_component] = "\n".join(current_content).strip()
+                    current_content = []
+                    current_component = None
+                in_code_block = not in_code_block
                 continue
-                
-            if "// src/" in line:
-                if "ContractName.cs" in line:
+            
+            # Handle file path markers
+            if "// src/" in line or "// " in line:
+                if "ContractName.cs" in line or "TaskContract.cs" in line:
                     current_component = "contract"
-                elif "ContractState.cs" in line:
+                elif "ContractState.cs" in line or "State.cs" in line:
                     current_component = "state"
                 elif ".proto" in line:
                     current_component = "proto"
-                elif "ContractReference.cs" in line:
+                elif "ContractReference.cs" in line or "Reference.cs" in line:
                     current_component = "reference"
                 elif ".csproj" in line:
                     current_component = "project"
                 continue
-                
-            if current_component:
+            
+            # Collect content if in a code block and have a current component
+            if in_code_block and current_component:
                 current_content.append(line)
         
         # Add last component if any
         if current_component and current_content:
             components[current_component] = "\n".join(current_content).strip()
+        
+        # Ensure all components have content
+        if not any(components.values()):
+            raise ValueError("No code components were successfully parsed")
+        
+        # Log the components for debugging
+        print("Generated components:")
+        for key, value in components.items():
+            print(f"{key}: {len(value)} characters")
         
         # Return command with results
         return Command(
@@ -399,7 +423,8 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         "state": components["state"],
                         "proto": components["proto"],
                         "reference": components.get("reference", ""),
-                        "project": components.get("project", "")
+                        "project": components.get("project", ""),
+                        "analysis": analysis
                     }
                 }
             }
@@ -407,6 +432,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         
     except Exception as e:
         error_msg = f"Error generating contract: {str(e)}"
+        print(f"Generation error: {error_msg}")  # Add logging
         return Command(
             goto="__end__",
             update={
