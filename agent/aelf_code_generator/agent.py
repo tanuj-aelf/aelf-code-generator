@@ -2,10 +2,11 @@
 This module defines the main agent workflow for AELF smart contract code generation.
 """
 
-from typing import Dict, List, Any, Annotated, TypedDict
-from langchain_core.messages import HumanMessage, SystemMessage
+from typing import Dict, List, Any, Annotated
+from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.prebuilt.tool_executor import ToolExecutor
+from langgraph.graph.message import add_messages
 from aelf_code_generator.model import get_model
 from aelf_code_generator.types import AgentState, get_default_state
 
@@ -40,10 +41,7 @@ Ensure the code follows AELF best practices and is ready for deployment."""
 async def process_contract(state: AgentState) -> AgentState:
     """Process the dApp description and generate smart contract code."""
     try:
-        if state.get("is_complete"):
-            return state
-
-        # Get model
+        # Get model with state
         model = get_model(state)
         
         # Generate complete analysis and code
@@ -83,7 +81,6 @@ async def process_contract(state: AgentState) -> AgentState:
             "proto": components["proto"].strip(),
             "analysis": analysis
         }
-        state["is_complete"] = True
         
         return state
         
@@ -95,20 +92,24 @@ async def process_contract(state: AgentState) -> AgentState:
             "proto": "",
             "analysis": f"Error generating contract: {str(e)}"
         }
-        state["is_complete"] = True  # Set to True to prevent recursion
         return state
 
-# Define workflow
-workflow = StateGraph(AgentState)
-workflow.add_node("process", process_contract)
+def create_agent():
+    """Create the agent workflow."""
+    workflow = StateGraph(AgentState)
+    
+    # Add single processing node
+    workflow.add_node("process", process_contract)
+    
+    # Set entry point and connect to end
+    workflow.set_entry_point("process")
+    workflow.add_edge("process", END)
+    
+    # Compile workflow
+    return workflow.compile()
 
-# Set entry point and connect to end
-workflow.set_entry_point("process")
-workflow.add_edge("process", END)  # Always proceed to END to prevent recursion
-
-# Create memory saver and compile graph
-memory = MemorySaver()
-graph = workflow.compile(checkpointer=memory)
+# Create the graph
+graph = create_agent()
 
 # Export
 __all__ = ["graph"] 
