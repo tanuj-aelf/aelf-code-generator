@@ -221,7 +221,7 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__
         all_results = []
         for query in queries:
             try:
-                results = search.results(query, search_depth="advanced", max_results=5)
+                results = search.results(query, search_depth="advanced", max_results=5, timeout=180)
                 all_results.extend(results)
             except Exception as e:
                 print(f"Search error for query '{query}': {str(e)}")
@@ -263,7 +263,7 @@ Please analyze these results and provide structured insights for code generation
 """)
             ]
             
-            response = await model.ainvoke(messages)
+            response = await model.ainvoke(messages, timeout=150)
             insights = response.content.strip()
             
             if not insights:
