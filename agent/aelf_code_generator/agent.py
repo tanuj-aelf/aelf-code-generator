@@ -36,7 +36,7 @@ Focus on:
 
 Provide structured insights that will guide the code generation process."""
 
-CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation.
+CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation following AELF's standard project structure.
 
 Follow these implementation guidelines:
 {implementation_guidelines}
@@ -50,21 +50,67 @@ Project structure to follow:
 Relevant sample references:
 {relevant_samples}
 
-Generate complete, production-ready code including:
-- Main contract class in C# with proper AELF base classes
-- State management classes with proper mappings
-- Protobuf service and message definitions
-- Event declarations and emissions
-- Access control implementation
-- Input validation and error handling
-- XML documentation
+Generate the following files with proper implementations:
 
-Format the code output in clear code blocks:
-- C# contract code in ```csharp blocks
-- State classes in ```csharp blocks
-- Protobuf definitions in ```protobuf blocks
+1. Main Contract File (src/ContractName.cs):
+- Inherit from ContractNameContainer.ContractNameBase
+- Implement all contract methods
+- Use proper state management
+- Include XML documentation
+- Add proper access control
+- Include input validation
+- Emit events for state changes
 
-Ensure the code follows AELF best practices and is ready for deployment."""
+2. State Class File (src/ContractState.cs):
+- Define all state variables using proper AELF state types
+- Use MappedState for collections
+- Use SingletonState for single values
+- Include XML documentation
+
+3. Proto File (src/Protobuf/contract/contract_name.proto):
+- Define all messages and services
+- Use proper protobuf types
+- Include method definitions
+- Define events
+- Add proper comments
+
+4. Reference Contract File (src/ContractReference.cs):
+- Define contract reference state
+- Include necessary contract references
+- Add helper methods
+
+5. Project File (ContractName.csproj):
+- Include necessary AELF package references
+- Set proper SDK version
+- Configure protobuf generation
+
+Format each file in a separate code block with proper file path comment:
+```csharp
+// src/ContractName.cs
+... contract implementation ...
+```
+
+```csharp
+// src/ContractState.cs
+... state class implementation ...
+```
+
+```protobuf
+// src/Protobuf/contract/contract_name.proto
+... proto definitions ...
+```
+
+```csharp
+// src/ContractReference.cs
+... contract references ...
+```
+
+```xml
+// ContractName.csproj
+... project configuration ...
+```
+
+Ensure all files follow AELF conventions and best practices."""
 
 async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
@@ -145,92 +191,198 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
 async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__end__"]]:
     """Analyze AELF sample codebases to gather implementation insights."""
     try:
-        # Initialize Tavily search with API key
-        tavily_api_key = os.getenv("TAVILY_API_KEY")
-        if not tavily_api_key:
-            raise ValueError("TAVILY_API_KEY not found in environment variables")
-            
-        search = TavilySearchAPIWrapper(tavily_api_key=tavily_api_key)
-        
-        # Prepare search queries based on analysis
-        analysis = state["_internal"]["analysis"]
-        
         # First try to determine the type of contract from analysis
+        analysis = state["_internal"]["analysis"]
         contract_type = "smart contract"  # default
+        
+        # Identify relevant sample based on contract type
+        relevant_samples = []
         if "NFT" in analysis or "token" in analysis.lower():
             contract_type = "NFT contract"
+            relevant_samples = ["nft"]
         elif "DAO" in analysis.lower():
             contract_type = "DAO contract"
+            relevant_samples = ["simple-dao"]
         elif "game" in analysis.lower():
             contract_type = "game contract"
+            relevant_samples = ["lottery-game", "tic-tac-toe"]
+        elif "todo" in analysis.lower():
+            contract_type = "todo contract"
+            relevant_samples = ["todo"]
+        elif "vote" in analysis.lower():
+            contract_type = "voting contract"
+            relevant_samples = ["vote"]
+        elif "allowance" in analysis.lower() or "spending" in analysis.lower():
+            contract_type = "allowance contract"
+            relevant_samples = ["allowance"]
+        elif "staking" in analysis.lower():
+            contract_type = "staking contract"
+            relevant_samples = ["staking"]
+        elif "donation" in analysis.lower():
+            contract_type = "donation contract"
+            relevant_samples = ["donation"]
+        elif "expense" in analysis.lower() or "tracking" in analysis.lower():
+            contract_type = "expense tracking contract"
+            relevant_samples = ["expense-tracker"]
+        else:
+            # For basic contracts, look at hello-world
+            relevant_samples = ["hello-world"]
             
-        # Prepare focused queries
-        queries = [
-            f"site:github.com/AElfProject/aelf-samples {contract_type} implementation example",
-            f"site:github.com/AElfProject/aelf-samples {contract_type} structure patterns",
-            "site:github.com/AElfProject/aelf-samples contract state management protobuf example"
+        # Get model to analyze requirements
+        model = get_model(state)
+        
+        # Generate codebase insights with improved prompt
+        messages = [
+            SystemMessage(content="""You are an expert AELF smart contract developer. Based on the contract requirements and AELF sample contracts, provide implementation insights and patterns.
+Focus on practical, concrete patterns that can be directly applied to smart contract development.
+For each pattern you identify, include a brief explanation of why it's important and how it should be used.
+
+Your response should be structured in these sections:
+1. Project Structure - How the contract files should be organized
+2. Coding Patterns - Common patterns and practices to use
+3. Implementation Guidelines - Specific guidance for this contract type
+4. Relevant Samples - Which sample contracts to reference
+
+Be specific and detailed in your guidance."""),
+            HumanMessage(content=f"""
+Based on the following contract requirements and type, provide implementation insights and patterns from AELF sample contracts.
+
+Contract Requirements:
+{analysis}
+
+Contract Type: {contract_type}
+Relevant Sample(s): {', '.join(relevant_samples)}
+
+Please provide structured insights focusing on:
+
+1. Project Structure and Organization
+   - Required contract files and their purpose
+   - State variables and their types
+   - Events and their parameters
+   - Contract references needed
+
+2. Smart Contract Patterns
+   - State management patterns for this type
+   - Access control patterns needed
+   - Event handling patterns
+   - Common utility functions
+   - Error handling strategies
+
+3. Implementation Guidelines
+   - Best practices for this contract type
+   - Security considerations
+   - Performance optimizations
+   - Testing approaches
+
+4. Code Examples
+   - Key methods to implement
+   - Common features needed
+   - Pitfalls to avoid
+
+Your insights will guide the code generation process.""")
         ]
         
-        # Gather insights from sample codebases
-        all_results = []
-        for query in queries:
-            try:
-                results = search.results(query, search_depth="advanced", max_results=5)
-                all_results.extend(results)
-            except Exception as e:
-                print(f"Search error for query '{query}': {str(e)}")
-                continue
-        
-        if not all_results:
-            # Fallback to model-based insights if search fails
-            insights_dict = {
-                "project_structure": """Standard AELF project structure:
-1. Contract class inheriting from AElfContract
-2. State class for data storage
-3. Proto files for interface definition""",
-                "coding_patterns": """Common AELF patterns:
-1. State management using MapState/SingletonState
-2. Event emission for status changes
-3. Authorization checks using Context.Sender""",
-                "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
-                "implementation_guidelines": """Follow AELF best practices:
-1. Use proper base classes
-2. Implement state management
-3. Add proper access control
-4. Include input validation
-5. Emit events for state changes"""
-            }
-        else:
-            # Get model to analyze search results
-            model = get_model(state)
-            
-            # Generate codebase insights
-            messages = [
-                SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
-                HumanMessage(content=f"""
-Analysis: {analysis}
-
-Search Results:
-{all_results}
-
-Please analyze these results and provide structured insights for code generation.
-""")
-            ]
-            
-            response = await model.ainvoke(messages)
+        try:
+            response = await model.ainvoke(messages, timeout=150)
             insights = response.content.strip()
             
             if not insights:
                 raise ValueError("Codebase analysis failed - empty response")
                 
-            # Parse insights into structured format
+            # Split insights into sections
+            sections = insights.split("\n\n")
+            
+            # Extract sections based on headers
+            project_structure = ""
+            coding_patterns = ""
+            implementation_guidelines = insights  # Keep full response as guidelines
+            
+            for i, section in enumerate(sections):
+                section_lower = section.lower()
+                if any(header in section_lower for header in ["project structure", "file structure", "organization"]):
+                    project_structure = section
+                    # Look ahead for subsections
+                    for next_section in sections[i+1:]:
+                        if not any(header in next_section.lower() for header in ["pattern", "guideline", "implementation"]):
+                            project_structure += "\n\n" + next_section
+                        else:
+                            break
+                elif any(header in section_lower for header in ["pattern", "practice", "common"]):
+                    coding_patterns = section
+                    # Look ahead for subsections
+                    for next_section in sections[i+1:]:
+                        if not any(header in next_section.lower() for header in ["guideline", "implementation", "structure"]):
+                            coding_patterns += "\n\n" + next_section
+                        else:
+                            break
+            
+            # Ensure we have content for each section
+            if not project_structure:
+                project_structure = """Standard AELF project structure:
+1. Main Contract Implementation (ContractName.cs)
+   - Inherits from ContractBase
+   - Contains contract logic
+   - Uses state management
+   - Includes documentation
+
+2. Contract State (ContractState.cs)
+   - Defines state variables
+   - Uses proper AELF types
+   - Includes documentation
+
+3. Protobuf Definitions (Protobuf/)
+   - contract/ - Interface
+   - message/ - Messages
+   - reference/ - References
+
+4. Contract References (ContractReferences.cs)
+   - Reference declarations
+   - Helper methods"""
+
+            if not coding_patterns:
+                coding_patterns = """Common AELF patterns:
+1. State Management
+   - MapState for collections
+   - SingletonState for values
+   - State initialization
+   - Access patterns
+
+2. Access Control
+   - Context.Sender checks
+   - Ownership patterns
+   - Authorization
+   - Least privilege
+
+3. Event Handling
+   - Event definitions
+   - State change events
+   - Event parameters
+   - Documentation
+
+4. Input Validation
+   - Parameter validation
+   - State validation
+   - Error messages
+   - Fail-fast approach
+
+5. Error Handling
+   - Exception types
+   - Error messages
+   - Edge cases
+   - AELF patterns"""
+                
+            # Create insights dictionary with extracted sections
             insights_dict = {
-                "project_structure": "Standard AELF project structure with contract, state, and proto files",
-                "coding_patterns": insights.split("Common coding patterns:")[1].split("\n")[0] if "Common coding patterns:" in insights else "",
-                "relevant_samples": [r["url"] for r in all_results if "github.com" in r["url"]],
-                "implementation_guidelines": insights
+                "project_structure": project_structure,
+                "coding_patterns": coding_patterns,
+                "relevant_samples": relevant_samples,
+                "implementation_guidelines": implementation_guidelines
             }
-        
+                
+        except Exception as e:
+            print(f"Error analyzing requirements: {str(e)}")
+            raise
+            
         # Return command to move to next state
         return Command(
             goto="generate",
@@ -244,7 +396,7 @@ Please analyze these results and provide structured insights for code generation
         
     except Exception as e:
         error_msg = f"Error analyzing codebase: {str(e)}"
-        print(f"Codebase analysis error: {error_msg}")  # Add logging
+        print(f"Codebase analysis error: {error_msg}")
         return Command(
             goto="generate",  # Continue to generate even if codebase analysis fails
             update={
@@ -254,18 +406,22 @@ Please analyze these results and provide structured insights for code generation
                         "project_structure": """Standard AELF project structure:
 1. Contract class inheriting from AElfContract
 2. State class for data storage
-3. Proto files for interface definition""",
+3. Proto files for interface definition
+4. Project configuration in .csproj""",
                         "coding_patterns": """Common AELF patterns:
 1. State management using MapState/SingletonState
 2. Event emission for status changes
-3. Authorization checks using Context.Sender""",
-                        "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
+3. Authorization checks using Context.Sender
+4. Input validation with proper error handling""",
+                        "relevant_samples": ["hello-world"],
                         "implementation_guidelines": """Follow AELF best practices:
-1. Use proper base classes
-2. Implement state management
-3. Add proper access control
-4. Include input validation
-5. Emit events for state changes"""
+1. Use proper base classes and inheritance
+2. Implement robust state management
+3. Add proper access control checks
+4. Include comprehensive input validation
+5. Emit events for important state changes
+6. Follow proper error handling patterns
+7. Add XML documentation for all public members"""
                     }
                 }
             }
@@ -293,35 +449,179 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 project_structure=insights["project_structure"],
                 relevant_samples="\n".join(insights["relevant_samples"])
             )),
-            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract code based on this analysis and insights.")
+            HumanMessage(content=f"Analysis:\n{analysis}\n\nPlease generate the complete smart contract implementation following AELF's project structure.")
         ]
         
-        response = await model.ainvoke(messages)
-        content = response.content
-        
-        if not content:
-            raise ValueError("Code generation failed - empty response")
+        try:
+            # Set a longer timeout for code generation
+            response = await model.ainvoke(messages, timeout=150)  # 5 minutes timeout
+            content = response.content
             
-        # Parse code blocks
+            if not content:
+                raise ValueError("Code generation failed - empty response")
+        except TimeoutError:
+            print("Code generation timed out, using partial response if available")
+            content = getattr(response, 'content', '') or ""
+            if not content:
+                raise ValueError("Code generation timed out and no partial response available")
+                
+        # Initialize components with empty CodeFile structures
+        empty_code_file = {"content": "", "file_type": "", "path": ""}
         components = {
-            "contract": "",
-            "state": "",
-            "proto": ""
+            "contract": dict(empty_code_file),
+            "state": dict(empty_code_file),
+            "proto": dict(empty_code_file),
+            "reference": dict(empty_code_file),
+            "project": dict(empty_code_file)
         }
+        additional_files = []  # List to store additional files
         
+        # Parse code blocks
         current_component = None
-        for line in content.split("\n"):
-            if "```csharp" in line or "```c#" in line:
-                current_component = "contract" if "contract" not in components["contract"] else "state"
-            elif "```protobuf" in line:
-                current_component = "proto"
-            elif "```" in line:
-                current_component = None
-            elif current_component and current_component in components:
-                components[current_component] += line + "\n"
+        current_content = []
+        in_code_block = False
+        current_file_type = ""
         
-        # Ensure all components have at least empty string values
-        components = {k: v.strip() or "" for k, v in components.items()}
+        # Track if we're inside XML documentation
+        in_xml_doc = False
+        xml_doc_content = []
+        
+        for line in content.split("\n"):
+            # Handle XML documentation
+            if "///" in line or "/<" in line:
+                in_xml_doc = True
+                xml_doc_content.append(line)
+                continue
+            elif in_xml_doc and (">" in line or line.strip().endswith("/")):
+                in_xml_doc = False
+                xml_doc_content.append(line)
+                if current_content:
+                    current_content.extend(xml_doc_content)
+                xml_doc_content = []
+                continue
+            elif in_xml_doc:
+                xml_doc_content.append(line)
+                continue
+                
+            # Handle code block markers
+            if "```" in line:
+                if not in_code_block:
+                    # Start of code block - detect language
+                    if "csharp" in line.lower():
+                        current_file_type = "csharp"
+                    elif "protobuf" in line.lower() or "proto" in line.lower():
+                        current_file_type = "proto"
+                    elif "xml" in line.lower():
+                        current_file_type = "xml"
+                    else:
+                        current_file_type = "text"
+                else:
+                    # End of code block
+                    if current_component and current_content:
+                        code_content = "\n".join(current_content).strip()
+                        if current_component in components:
+                            components[current_component]["content"] = code_content
+                            components[current_component]["file_type"] = current_file_type
+                        else:
+                            # Only store non-empty additional files
+                            if code_content and current_file_type:
+                                additional_files.append({
+                                    "content": code_content,
+                                    "file_type": current_file_type,
+                                    "path": components.get(current_component, {}).get("path", "")
+                                })
+                    current_content = []
+                    current_component = None
+                    current_file_type = ""
+                in_code_block = not in_code_block
+                continue
+            
+            # Handle file path markers
+            if ("// src/" in line or "// " in line or "<!-- " in line):
+                # Skip if it's just a comment about the file path in code
+                if in_code_block and not line.strip().startswith("//") and not line.strip().startswith("<!--"):
+                    current_content.append(line)
+                    continue
+                    
+                file_path = (
+                    line.replace("// ", "")
+                    .replace("<!-- ", "")
+                    .replace(" -->", "")
+                    .strip()
+                )
+                
+                # First check for project file since it has a different comment style
+                if ".csproj" in line:
+                    current_component = "project"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "xml"
+                # Then check for other files
+                elif "TaskContract.cs" in line or "Contract.cs" in line:
+                    current_component = "contract"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
+                elif "ContractState.cs" in line or "State.cs" in line:
+                    current_component = "state"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
+                elif ".proto" in line:
+                    current_component = "proto"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "proto"
+                elif "ContractReference.cs" in line or "Reference.cs" in line:
+                    current_component = "reference"
+                    components[current_component]["path"] = file_path
+                    components[current_component]["file_type"] = "csharp"
+                else:
+                    # Only create additional file entry if it's a real file path
+                    if "." in file_path and "/" in file_path:
+                        current_component = "additional"
+                        additional_files.append({
+                            "content": "",  # Will be filled when code block ends
+                            "file_type": "",  # Will be set when code block starts
+                            "path": file_path
+                        })
+                continue
+            
+            # Collect content if in a code block and have a current component
+            if in_code_block and current_component:
+                current_content.append(line)
+        
+        # Add last component if any
+        if current_component and current_content:
+            code_content = "\n".join(current_content).strip()
+            if current_component in components:
+                components[current_component]["content"] = code_content
+                components[current_component]["file_type"] = current_file_type
+            else:
+                # Only store non-empty additional files
+                if code_content and current_file_type:
+                    additional_files.append({
+                        "content": code_content,
+                        "file_type": current_file_type,
+                        "path": components.get(current_component, {}).get("path", "")
+                    })
+        
+        # Filter out empty or invalid additional files
+        additional_files = [
+            f for f in additional_files 
+            if f["content"] and f["file_type"] and not any(
+                invalid in f["path"].lower() 
+                for invalid in ["<summary>", "</summary>", "<param", "</param>", "<returns>", "</returns>"]
+            )
+        ]
+        
+        # Ensure all components have content
+        if not any(c["content"] for c in components.values()) and not additional_files:
+            raise ValueError("No code components were successfully parsed")
+        
+        # Log the components for debugging
+        print("Generated components:")
+        for key, value in components.items():
+            print(f"{key}: {len(value['content'])} characters, type: {value['file_type']}, path: {value['path']}")
+        print("Additional files:")
+        for file in additional_files:
+            print(f"Additional: {len(file['content'])} characters, type: {file['file_type']}, path: {file['path']}")
         
         # Return command with results
         return Command(
@@ -330,10 +630,13 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 "_internal": {
                     **state["_internal"],
                     "output": {
-                        "contract": components["contract"],
-                        "state": components["state"],
-                        "proto": components["proto"],
-                        "analysis": analysis
+                        "contract": components["contract"],  # Main contract implementation with metadata
+                        "state": components["state"],  # State class implementation with metadata
+                        "proto": components["proto"],  # Proto definitions with metadata
+                        "reference": components["reference"],  # Reference code with metadata
+                        "project": components["project"],  # Project configuration with metadata
+                        "metadata": additional_files,  # Additional files with metadata
+                        "analysis": analysis  # Analysis output
                     }
                 }
             }
@@ -341,15 +644,20 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         
     except Exception as e:
         error_msg = f"Error generating contract: {str(e)}"
+        print(f"Generation error: {error_msg}")  # Add logging
+        empty_code_file = {"content": "", "file_type": "", "path": ""}
         return Command(
             goto="__end__",
             update={
                 "_internal": {
                     **state["_internal"],
                     "output": {
-                        "contract": "",
-                        "state": "",
-                        "proto": "",
+                        "contract": empty_code_file,
+                        "state": empty_code_file,
+                        "proto": empty_code_file,
+                        "reference": empty_code_file,
+                        "project": empty_code_file,
+                        "metadata": [],  # Empty list for additional files
                         "analysis": error_msg
                     }
                 }
