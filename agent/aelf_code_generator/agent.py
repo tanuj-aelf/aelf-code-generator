@@ -191,92 +191,198 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
 async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__end__"]]:
     """Analyze AELF sample codebases to gather implementation insights."""
     try:
-        # Initialize Tavily search with API key
-        tavily_api_key = os.getenv("TAVILY_API_KEY")
-        if not tavily_api_key:
-            raise ValueError("TAVILY_API_KEY not found in environment variables")
-            
-        search = TavilySearchAPIWrapper(tavily_api_key=tavily_api_key)
-        
-        # Prepare search queries based on analysis
-        analysis = state["_internal"]["analysis"]
-        
         # First try to determine the type of contract from analysis
+        analysis = state["_internal"]["analysis"]
         contract_type = "smart contract"  # default
+        
+        # Identify relevant sample based on contract type
+        relevant_samples = []
         if "NFT" in analysis or "token" in analysis.lower():
             contract_type = "NFT contract"
+            relevant_samples = ["nft"]
         elif "DAO" in analysis.lower():
             contract_type = "DAO contract"
+            relevant_samples = ["simple-dao"]
         elif "game" in analysis.lower():
             contract_type = "game contract"
+            relevant_samples = ["lottery-game", "tic-tac-toe"]
+        elif "todo" in analysis.lower():
+            contract_type = "todo contract"
+            relevant_samples = ["todo"]
+        elif "vote" in analysis.lower():
+            contract_type = "voting contract"
+            relevant_samples = ["vote"]
+        elif "allowance" in analysis.lower() or "spending" in analysis.lower():
+            contract_type = "allowance contract"
+            relevant_samples = ["allowance"]
+        elif "staking" in analysis.lower():
+            contract_type = "staking contract"
+            relevant_samples = ["staking"]
+        elif "donation" in analysis.lower():
+            contract_type = "donation contract"
+            relevant_samples = ["donation"]
+        elif "expense" in analysis.lower() or "tracking" in analysis.lower():
+            contract_type = "expense tracking contract"
+            relevant_samples = ["expense-tracker"]
+        else:
+            # For basic contracts, look at hello-world
+            relevant_samples = ["hello-world"]
             
-        # Prepare focused queries
-        queries = [
-            f"site:github.com/AElfProject/aelf-samples {contract_type} implementation example",
-            f"site:github.com/AElfProject/aelf-samples {contract_type} structure patterns",
-            "site:github.com/AElfProject/aelf-samples contract state management protobuf example"
+        # Get model to analyze requirements
+        model = get_model(state)
+        
+        # Generate codebase insights with improved prompt
+        messages = [
+            SystemMessage(content="""You are an expert AELF smart contract developer. Based on the contract requirements and AELF sample contracts, provide implementation insights and patterns.
+Focus on practical, concrete patterns that can be directly applied to smart contract development.
+For each pattern you identify, include a brief explanation of why it's important and how it should be used.
+
+Your response should be structured in these sections:
+1. Project Structure - How the contract files should be organized
+2. Coding Patterns - Common patterns and practices to use
+3. Implementation Guidelines - Specific guidance for this contract type
+4. Relevant Samples - Which sample contracts to reference
+
+Be specific and detailed in your guidance."""),
+            HumanMessage(content=f"""
+Based on the following contract requirements and type, provide implementation insights and patterns from AELF sample contracts.
+
+Contract Requirements:
+{analysis}
+
+Contract Type: {contract_type}
+Relevant Sample(s): {', '.join(relevant_samples)}
+
+Please provide structured insights focusing on:
+
+1. Project Structure and Organization
+   - Required contract files and their purpose
+   - State variables and their types
+   - Events and their parameters
+   - Contract references needed
+
+2. Smart Contract Patterns
+   - State management patterns for this type
+   - Access control patterns needed
+   - Event handling patterns
+   - Common utility functions
+   - Error handling strategies
+
+3. Implementation Guidelines
+   - Best practices for this contract type
+   - Security considerations
+   - Performance optimizations
+   - Testing approaches
+
+4. Code Examples
+   - Key methods to implement
+   - Common features needed
+   - Pitfalls to avoid
+
+Your insights will guide the code generation process.""")
         ]
         
-        # Gather insights from sample codebases
-        all_results = []
-        for query in queries:
-            try:
-                results = search.results(query, search_depth="advanced", max_results=5, timeout=180)
-                all_results.extend(results)
-            except Exception as e:
-                print(f"Search error for query '{query}': {str(e)}")
-                continue
-        
-        if not all_results:
-            # Fallback to model-based insights if search fails
-            insights_dict = {
-                "project_structure": """Standard AELF project structure:
-1. Contract class inheriting from AElfContract
-2. State class for data storage
-3. Proto files for interface definition""",
-                "coding_patterns": """Common AELF patterns:
-1. State management using MapState/SingletonState
-2. Event emission for status changes
-3. Authorization checks using Context.Sender""",
-                "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
-                "implementation_guidelines": """Follow AELF best practices:
-1. Use proper base classes
-2. Implement state management
-3. Add proper access control
-4. Include input validation
-5. Emit events for state changes"""
-            }
-        else:
-            # Get model to analyze search results
-            model = get_model(state)
-            
-            # Generate codebase insights
-            messages = [
-                SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
-                HumanMessage(content=f"""
-Analysis: {analysis}
-
-Search Results:
-{all_results}
-
-Please analyze these results and provide structured insights for code generation.
-""")
-            ]
-            
+        try:
             response = await model.ainvoke(messages, timeout=150)
             insights = response.content.strip()
             
             if not insights:
                 raise ValueError("Codebase analysis failed - empty response")
                 
-            # Parse insights into structured format
+            # Split insights into sections
+            sections = insights.split("\n\n")
+            
+            # Extract sections based on headers
+            project_structure = ""
+            coding_patterns = ""
+            implementation_guidelines = insights  # Keep full response as guidelines
+            
+            for i, section in enumerate(sections):
+                section_lower = section.lower()
+                if any(header in section_lower for header in ["project structure", "file structure", "organization"]):
+                    project_structure = section
+                    # Look ahead for subsections
+                    for next_section in sections[i+1:]:
+                        if not any(header in next_section.lower() for header in ["pattern", "guideline", "implementation"]):
+                            project_structure += "\n\n" + next_section
+                        else:
+                            break
+                elif any(header in section_lower for header in ["pattern", "practice", "common"]):
+                    coding_patterns = section
+                    # Look ahead for subsections
+                    for next_section in sections[i+1:]:
+                        if not any(header in next_section.lower() for header in ["guideline", "implementation", "structure"]):
+                            coding_patterns += "\n\n" + next_section
+                        else:
+                            break
+            
+            # Ensure we have content for each section
+            if not project_structure:
+                project_structure = """Standard AELF project structure:
+1. Main Contract Implementation (ContractName.cs)
+   - Inherits from ContractBase
+   - Contains contract logic
+   - Uses state management
+   - Includes documentation
+
+2. Contract State (ContractState.cs)
+   - Defines state variables
+   - Uses proper AELF types
+   - Includes documentation
+
+3. Protobuf Definitions (Protobuf/)
+   - contract/ - Interface
+   - message/ - Messages
+   - reference/ - References
+
+4. Contract References (ContractReferences.cs)
+   - Reference declarations
+   - Helper methods"""
+
+            if not coding_patterns:
+                coding_patterns = """Common AELF patterns:
+1. State Management
+   - MapState for collections
+   - SingletonState for values
+   - State initialization
+   - Access patterns
+
+2. Access Control
+   - Context.Sender checks
+   - Ownership patterns
+   - Authorization
+   - Least privilege
+
+3. Event Handling
+   - Event definitions
+   - State change events
+   - Event parameters
+   - Documentation
+
+4. Input Validation
+   - Parameter validation
+   - State validation
+   - Error messages
+   - Fail-fast approach
+
+5. Error Handling
+   - Exception types
+   - Error messages
+   - Edge cases
+   - AELF patterns"""
+                
+            # Create insights dictionary with extracted sections
             insights_dict = {
-                "project_structure": "Standard AELF project structure with contract, state, and proto files",
-                "coding_patterns": insights.split("Common coding patterns:")[1].split("\n")[0] if "Common coding patterns:" in insights else "",
-                "relevant_samples": [r["url"] for r in all_results if "github.com" in r["url"]],
-                "implementation_guidelines": insights
+                "project_structure": project_structure,
+                "coding_patterns": coding_patterns,
+                "relevant_samples": relevant_samples,
+                "implementation_guidelines": implementation_guidelines
             }
-        
+                
+        except Exception as e:
+            print(f"Error analyzing requirements: {str(e)}")
+            raise
+            
         # Return command to move to next state
         return Command(
             goto="generate",
@@ -290,7 +396,7 @@ Please analyze these results and provide structured insights for code generation
         
     except Exception as e:
         error_msg = f"Error analyzing codebase: {str(e)}"
-        print(f"Codebase analysis error: {error_msg}")  # Add logging
+        print(f"Codebase analysis error: {error_msg}")
         return Command(
             goto="generate",  # Continue to generate even if codebase analysis fails
             update={
@@ -300,18 +406,22 @@ Please analyze these results and provide structured insights for code generation
                         "project_structure": """Standard AELF project structure:
 1. Contract class inheriting from AElfContract
 2. State class for data storage
-3. Proto files for interface definition""",
+3. Proto files for interface definition
+4. Project configuration in .csproj""",
                         "coding_patterns": """Common AELF patterns:
 1. State management using MapState/SingletonState
 2. Event emission for status changes
-3. Authorization checks using Context.Sender""",
-                        "relevant_samples": ["https://github.com/AElfProject/aelf-samples"],
+3. Authorization checks using Context.Sender
+4. Input validation with proper error handling""",
+                        "relevant_samples": ["hello-world"],
                         "implementation_guidelines": """Follow AELF best practices:
-1. Use proper base classes
-2. Implement state management
-3. Add proper access control
-4. Include input validation
-5. Emit events for state changes"""
+1. Use proper base classes and inheritance
+2. Implement robust state management
+3. Add proper access control checks
+4. Include comprehensive input validation
+5. Emit events for important state changes
+6. Follow proper error handling patterns
+7. Add XML documentation for all public members"""
                     }
                 }
             }
