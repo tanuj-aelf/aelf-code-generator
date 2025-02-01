@@ -1,33 +1,33 @@
 [tool.poetry]
 name = "aelf-code-generator"
 version = "0.1.0"
-description = "AELF Smart Contract Code Generator Agent"
-authors = ["Your Name <your.email@example.com>"]
+description = "AELF Smart Contract Code Generator"
+authors = ["Your Name <you@example.com>"]
+readme = "README.md"
 packages = [
     { include = "aelf_code_generator", from = "." }
 ]
 
 [tool.poetry.dependencies]
 python = "^3.12"
-copilotkit = "0.1.33"
+langchain = "0.3.4"
 langchain-openai = "0.2.3"
-langchain-community = "^0.3.1"
 langchain-anthropic = "0.3.1"
 langchain-google-genai = "2.0.5"
-langchain = "0.3.4"
-langchain-core = "^0.3.25"
-langgraph-cli = {extras = ["inmem"], version = "^0.1.64"}
-tavily-python = "^0.5.0"
-aiohttp = "^3.11.11"
+langgraph-cli = {version = "^0.1.64", extras = ["inmem"]}
+langgraph = {version = "^0.2.50", extras = ["api"]}
+copilotkit = "0.1.33"
+fastapi = "^0.115.0"
+uvicorn = "^0.31.0"
 pydantic = "^2.6.1"
 python-dotenv = "^1.0.1"
+tavily-python = "^0.5.0"
 html2text = "^2024.2.26"
-uvicorn = "^0.31.0"
-fastapi = ">=0.115.0,<0.116.0"
+aiohttp = "^3.11.11"
 
 [tool.poetry.scripts]
 demo = "aelf_code_generator.demo:main"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api" 
