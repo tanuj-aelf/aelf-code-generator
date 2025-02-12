@@ -4,8 +4,11 @@ import { useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { CopilotChat } from "@copilotkit/react-ui";
-import { useCopilotAction } from "@copilotkit/react-core";
+import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
 import MonacoEditor from "@monaco-editor/react";
+import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
+import { useModelSelectorContext } from "@/lib/model-selector-provider";
+import { AgentState } from "@/lib/types";
 
 type FlatData = Record<string, string>;
 type NestedObject = Record<string, any>;
@@ -42,46 +45,66 @@ function MainContent() {
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
     new Set()
   );
-
-  useCopilotAction(
-    {
-      name: "generateProject",
-      description: `Generate a smart contract project using Aelf blockchain in dotnet with the following folder structure:
-src/
-├── Protobuf/
-│   ├── contract/
-│   │   └── {{SmartContract Name in small letter}}_contract.proto
-│   ├── message/
-│   │   └── {{SmartContract Name in small letter}}_message.proto
-│   ├── reference/
-│       └── acs12.proto
-│
-├── {{SmartContract Name}}Contract.cs
-├── {{SmartContract Name}}ContractState.cs
-└── {{SmartContract Name}}Contract.csproj`,
-      parameters: [
-        {
-          name: "code",
-          type: "object",
-          description: "Code for each file in the smart contract",
-          required: true,
-        },
-      ],
-      handler: async (data) => {
-        const { code } = data;
-        console.log("Generated Project Details", data);
-        const formattedObject = formatFlatObject(code as FlatData);
-        setFolderStructure(formattedObject);
-        if (Object.keys(code).length > 0) {
-          const firstFile = Object.keys(code)[0];
-          setSelectedFile(firstFile);
-          setSelectedFilesArray([firstFile]);
-          setFileContent(code[firstFile]);
-        }
-      },
+  const { model, agent } = useModelSelectorContext();
+  const { run: runResearchAgent, state: agentState } = useCoAgent<AgentState>({
+    name: agent,
+    initialState: {
+      model,
     },
-    []
-  );
+  });
+
+  console.log("agentState", agentState);
+
+  const handleResearch = (query: string) => {
+    runResearchAgent(() => {
+      return new TextMessage({
+        role: MessageRole.User,
+        content: query,
+      });
+    });
+  };
+
+  // useCopilotAction(
+  // {
+  //   name: "aelf_code_generator",
+  //   description: "Create a contract with all saperate files like cs, state, proto files and etc.",
+  //       description: `Generate a smart contract project using Aelf blockchain in dotnet with the following folder structure:
+  // src/
+  // ├── Protobuf/
+  // │   ├── contract/
+  // │   │   └── {{SmartContract Name in small letter}}_contract.proto
+  // │   ├── message/
+  // │   │   └── {{SmartContract Name in small letter}}_message.proto
+  // │   ├── reference/
+  // │       └── acs12.proto
+  // │
+  // ├── {{SmartContract Name}}Contract.cs
+  // ├── {{SmartContract Name}}ContractState.cs
+  // └── {{SmartContract Name}}Contract.csproj`,
+  // parameters: [
+  //   {
+  //     name: "generate",
+  //     type: "object",
+  //     // description: "Code for each file in the smart contract",
+  //     required: true,
+  //   },
+  // ],
+  // handler: async (data) => {
+  //   console.log("data",data)
+  // const { code } = data;
+  // console.log("Generated Project Details", data);
+  // const formattedObject = formatFlatObject(code as FlatData);
+  // setFolderStructure(formattedObject);
+  // if (Object.keys(code).length > 0) {
+  //   const firstFile = Object.keys(code)[0];
+  //   setSelectedFile(firstFile);
+  //   setSelectedFilesArray([firstFile]);
+  //   setFileContent(code[firstFile]);
+  // }
+  //     },
+  //   },
+  //   []
+  // );
 
   const handleFolderToggle = (path: string) => {
     setExpandedFolders((prev) => {
@@ -184,8 +207,12 @@ src/
   return (
     <div className="flex h-screen bg-gray-900 main-content">
       <div className="w-80">
-        <h1 className="text-xl p-4 font-bold text-white">AElf Code Generator</h1>
-        <p className="border-y px-2 py-2 border-gray-700 text-white text-[12px]">Files</p>
+        <h1 className="text-xl p-4 font-bold text-white">
+          AElf Code Generator
+        </h1>
+        <p className="border-y px-2 py-2 border-gray-700 text-white text-[12px]">
+          Files
+        </p>
         <div className="space-y-2 p-3">
           {renderFolderStructure(folderStructure)}
         </div>
@@ -194,7 +221,15 @@ src/
         <header className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
           <div className="flex items-center space-x-4"></div>
           <div className="flex items-center space-x-2">
-            <Button variant="ghost" className="text-gray-400 hover:text-white">
+            <Button
+              variant="ghost"
+              className="text-gray-400 hover:text-white"
+              onClick={() =>
+                handleResearch(
+                  "Create a contract for the todo dapp with all saperate files like cs, state, proto files and etc."
+                )
+              }
+            >
               Build
             </Button>
             <Button variant="ghost" className="text-gray-400 hover:text-white">
@@ -224,7 +259,7 @@ src/
             ))}
         </div>
 
-        {selectedFile && (
+        {/* {selectedFile && (
           <div className="flex-1 p-4 file-result-container bg-gray-800">
             <MonacoEditor
               language="csharp"
@@ -233,7 +268,7 @@ src/
               onChange={(value) => setFileContent(value as string)}
             />
           </div>
-        )}
+        )} */}
       </div>
     </div>
   );
@@ -252,7 +287,7 @@ export default function Home() {
             "--copilot-kit-secondary-contrast-color": "#FFFFFF",
             "--copilot-kit-primary-color": "rgb(31 41 55 / 1)",
             "--copilot-kit-contrast-color": "#FFFFFF",
-            "--copilot-kit-separator-color": "#FFF3"
+            "--copilot-kit-separator-color": "#FFF3",
           } as any
         }
       >
