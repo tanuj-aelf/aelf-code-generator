@@ -3,8 +3,6 @@
 import { useState } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { CopilotChat } from "@copilotkit/react-ui";
-import { useCoAgent, useCopilotAction } from "@copilotkit/react-core";
 import MonacoEditor from "@monaco-editor/react";
 import { TextMessage, MessageRole } from "@copilotkit/runtime-client-gql";
 import { useModelSelectorContext } from "@/lib/model-selector-provider";
@@ -13,23 +11,46 @@ import { AgentState } from "@/lib/types";
 type FlatData = Record<string, string>;
 type NestedObject = Record<string, any>;
 
-function formatFlatObject(flatData: FlatData): NestedObject {
-  const nestedObject: NestedObject = {};
+interface FolderStructure {
+  [key: string]: string | FolderStructure;
+}
+
+interface GeneratedFile {
+  path: string;
+  content: string;
+  file_type: string;
+}
+
+interface AgentResponse {
+  generate: {
+    _internal: {
+      output: {
+        contract: GeneratedFile;
+        state: GeneratedFile;
+        proto: GeneratedFile;
+        reference: GeneratedFile;
+        project: GeneratedFile;
+        metadata: GeneratedFile[];
+      };
+    };
+  };
+}
+
+function formatFlatObject(flatData: FlatData): FolderStructure {
+  const nestedObject: FolderStructure = {};
 
   for (const [path, content] of Object.entries(flatData)) {
-    const keys = path.split("/"); // Split the path into folders and file names
+    const keys = path.split("/");
     let current = nestedObject;
 
     keys.forEach((key, index) => {
       if (index === keys.length - 1) {
-        // Last key: assign content
         current[key] = content;
       } else {
-        // Intermediate key: create nested object if it doesn't exist
-        if (!current[key]) {
+        if (!current[key] || typeof current[key] === 'string') {
           current[key] = {};
         }
-        current = current[key];
+        current = current[key] as FolderStructure;
       }
     });
   }
@@ -38,110 +59,128 @@ function formatFlatObject(flatData: FlatData): NestedObject {
 }
 
 function MainContent() {
-  const [folderStructure, setFolderStructure] = useState({});
+  const [folderStructure, setFolderStructure] = useState<FolderStructure>({});
   const [selectedFilesArray, setSelectedFilesArray] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState("");
   const [fileContent, setFileContent] = useState("");
-  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(
-    new Set()
-  );
-  const { model, agent } = useModelSelectorContext();
-  const { run: runResearchAgent, state: agentState } = useCoAgent<AgentState>({
-    name: agent,
-    initialState: {
-      model,
-    },
-  });
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<Array<{ role: 'user' | 'assistant', content: string }>>([]);
+  const [inputValue, setInputValue] = useState('');
 
-  console.log("agentState", agentState);
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputValue.trim() || loading) return;
 
-  const handleResearch = (query: string) => {
-    runResearchAgent(() => {
-      return new TextMessage({
-        role: MessageRole.User,
-        content: query,
+    const userMessage = inputValue.trim();
+    setInputValue('');
+    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
+    
+    setLoading(true);
+    try {
+      console.log('Sending request to generate code:', userMessage);
+      
+      const response = await fetch('/api/copilotkit', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          prompt: userMessage,
+        }),
       });
-    });
-  };
 
-  // useCopilotAction(
-  // {
-  //   name: "aelf_code_generator",
-  //   description: "Create a contract with all saperate files like cs, state, proto files and etc.",
-  //       description: `Generate a smart contract project using Aelf blockchain in dotnet with the following folder structure:
-  // src/
-  // ├── Protobuf/
-  // │   ├── contract/
-  // │   │   └── {{SmartContract Name in small letter}}_contract.proto
-  // │   ├── message/
-  // │   │   └── {{SmartContract Name in small letter}}_message.proto
-  // │   ├── reference/
-  // │       └── acs12.proto
-  // │
-  // ├── {{SmartContract Name}}Contract.cs
-  // ├── {{SmartContract Name}}ContractState.cs
-  // └── {{SmartContract Name}}Contract.csproj`,
-  // parameters: [
-  //   {
-  //     name: "generate",
-  //     type: "object",
-  //     // description: "Code for each file in the smart contract",
-  //     required: true,
-  //   },
-  // ],
-  // handler: async (data) => {
-  //   console.log("data",data)
-  // const { code } = data;
-  // console.log("Generated Project Details", data);
-  // const formattedObject = formatFlatObject(code as FlatData);
-  // setFolderStructure(formattedObject);
-  // if (Object.keys(code).length > 0) {
-  //   const firstFile = Object.keys(code)[0];
-  //   setSelectedFile(firstFile);
-  //   setSelectedFilesArray([firstFile]);
-  //   setFileContent(code[firstFile]);
-  // }
-  //     },
-  //   },
-  //   []
-  // );
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || `HTTP error! status: ${response.status}`);
+      }
+
+      console.log('Received response:', data);
+
+      if (!data.generate?._internal?.output) {
+        throw new Error('Invalid response format from agent');
+      }
+
+      setMessages(prev => [...prev, { role: 'assistant', content: 'I have generated the code based on your requirements. You can view the files in the explorer.' }]);
+
+      const output = data.generate._internal.output;
+      const allFiles = [
+        output.contract,
+        output.state,
+        output.proto,
+        output.reference,
+        output.project,
+        ...(output.metadata || []),
+      ].filter(Boolean);
+
+      const newFolderStructure = allFiles.reduce((acc, file) => {
+        acc[file.path] = file.content;
+        return acc;
+      }, {} as FlatData);
+
+      setFolderStructure(formatFlatObject(newFolderStructure));
+      if (allFiles.length > 0) {
+        const firstFile = allFiles[0].path;
+        setSelectedFile(firstFile);
+        setSelectedFilesArray([firstFile]);
+        setFileContent(allFiles[0].content);
+      }
+    } catch (error) {
+      console.error('Error generating code:', error);
+      setMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, there was an error generating the code. Please try again.' }]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleFolderToggle = (path: string) => {
     setExpandedFolders((prev) => {
       const newExpandedFolders = new Set(prev);
       if (newExpandedFolders.has(path)) {
-        newExpandedFolders.delete(path); // Collapse the folder
+        newExpandedFolders.delete(path);
       } else {
-        newExpandedFolders.add(path); // Expand the folder
+        newExpandedFolders.add(path);
       }
       return newExpandedFolders;
     });
   };
 
-  const renderFolderStructure = (structure: any, parentPath = "") => {
-    // Separate folders and files for sorting
+  const getFileContent = (structure: FolderStructure, path: string): string => {
+    const parts = path.split('/');
+    let current: string | FolderStructure = structure;
+    
+    for (const part of parts) {
+      if (typeof current === 'string') return current;
+      current = current[part];
+      if (!current) return '';
+    }
+    
+    return typeof current === 'string' ? current : '';
+  };
+
+  const renderFolderStructure = (structure: FolderStructure, parentPath = "") => {
     const sortedKeys = Object.keys(structure).sort((a, b) => {
-      const isAFolder = typeof structure[a] === "object";
-      const isBFolder = typeof structure[b] === "object";
-      if (isAFolder && !isBFolder) return -1; // Folders first
-      if (!isAFolder && isBFolder) return 1; // Files later
-      return a.localeCompare(b); // Alphabetical order
+      const isAFolder = typeof structure[a] !== 'string';
+      const isBFolder = typeof structure[b] !== 'string';
+      if (isAFolder && !isBFolder) return -1;
+      if (!isAFolder && isBFolder) return 1;
+      return a.localeCompare(b);
     });
 
     return sortedKeys.map((key) => {
       const currentPath = parentPath ? `${parentPath}/${key}` : key;
-      const isFolder = typeof structure[key] === "object";
+      const isFolder = typeof structure[key] !== 'string';
       const isExpanded = expandedFolders.has(currentPath);
 
       if (isFolder) {
-        // Render folders
         return (
           <div key={currentPath}>
             <div
               onClick={() => handleFolderToggle(currentPath)}
               className="flex items-center gap-2 p-2 text-sm font-bold bg-gray-800 text-gray-300 cursor-pointer mb-1"
             >
-              {isExpanded ? "▼" : "▶"} {/* Arrow icon for folder */}
+              {isExpanded ? "▼" : "▶"}
               <svg
                 stroke="currentColor"
                 fill="currentColor"
@@ -163,13 +202,12 @@ function MainContent() {
             </div>
             {isExpanded && (
               <div className="pl-2 mb-1">
-                {renderFolderStructure(structure[key], currentPath)}
+                {renderFolderStructure(structure[key] as FolderStructure, currentPath)}
               </div>
             )}
           </div>
         );
       } else {
-        // Render files
         return (
           <div
             key={currentPath}
@@ -178,7 +216,7 @@ function MainContent() {
               setSelectedFilesArray((prev) =>
                 prev.includes(currentPath) ? prev : [...prev, currentPath]
               );
-              setFileContent(structure[key]);
+              setFileContent(structure[key] as string);
             }}
             className={`flex items-center gap-2 p-2 pl-7 text-sm cursor-pointer rounded-md hover:bg-gray-800 ${
               selectedFile === currentPath
@@ -205,101 +243,115 @@ function MainContent() {
   };
 
   return (
-    <div className="flex h-screen bg-gray-900 main-content">
-      <div className="w-80">
-        <h1 className="text-xl p-4 font-bold text-white">
-          AElf Code Generator
-        </h1>
-        <p className="border-y px-2 py-2 border-gray-700 text-white text-[12px]">
-          Files
-        </p>
-        <div className="space-y-2 p-3">
-          {renderFolderStructure(folderStructure)}
+    <div className="flex h-screen bg-gray-900">
+      <div className="flex-1 flex">
+        <div className="w-80 flex flex-col">
+          <h1 className="text-xl p-4 font-bold text-white">AElf Code Generator</h1>
+          <p className="border-y px-2 py-2 border-gray-700 text-white text-[12px]">
+            Files
+          </p>
+          <div className="flex-1 overflow-auto space-y-2 p-3">
+            {renderFolderStructure(folderStructure)}
+          </div>
+        </div>
+
+        <div className="flex-1 flex flex-col border-x border-gray-700">
+          <header className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
+            <div className="flex items-center space-x-4"></div>
+            <div className="flex items-center space-x-2">
+              <Button variant="ghost" className="text-gray-400 hover:text-white">
+                Deploy
+              </Button>
+            </div>
+          </header>
+
+          <div className="flex items-center">
+            {selectedFilesArray.length > 0 &&
+              selectedFilesArray.map((name: string, index) => (
+                <div
+                  className={`flex items-center justify-between gap-5 px-4 py-2 border border-gray-700 text-white text-[12px] cursor-pointer ${
+                    selectedFile === name ? "bg-gray-800" : ""
+                  }`}
+                  key={index}
+                  onClick={() => {
+                    setSelectedFile(name);
+                    const content = getFileContent(folderStructure, name);
+                    if (content) setFileContent(content);
+                  }}
+                >
+                  <p>{name}</p>
+                  <p className="text-[10px]" onClick={() => {}}>
+                    X
+                  </p>
+                </div>
+              ))}
+          </div>
+
+          {selectedFile && (
+            <div className="flex-1 p-4 file-result-container bg-gray-800">
+              <MonacoEditor
+                language="csharp"
+                value={fileContent}
+                theme="vs-dark"
+                onChange={(value) => setFileContent(value as string)}
+              />
+            </div>
+          )}
         </div>
       </div>
-      <div className="flex-1 flex flex-col border-x border-gray-700">
-        <header className="flex items-center justify-between px-4 py-3 border-b border-gray-700">
-          <div className="flex items-center space-x-4"></div>
-          <div className="flex items-center space-x-2">
-            <Button
-              variant="ghost"
-              className="text-gray-400 hover:text-white"
-              onClick={() =>
-                handleResearch(
-                  "Create a contract for the todo dapp with all saperate files like cs, state, proto files and etc."
-                )
-              }
+
+      <div className="w-[400px] flex flex-col border-l border-gray-700">
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          {messages.map((message, index) => (
+            <div
+              key={index}
+              className={`flex ${
+                message.role === 'user' ? 'justify-end' : 'justify-start'
+              }`}
             >
-              Build
-            </Button>
-            <Button variant="ghost" className="text-gray-400 hover:text-white">
-              Deploy
-            </Button>
-          </div>
-        </header>
-
-        <div className="flex items-center">
-          {selectedFilesArray.length > 0 &&
-            selectedFilesArray.map((name: string, index) => (
               <div
-                className={`flex items-center justify-between gap-5 px-4 py-2 border border-gray-700 text-white text-[12px] cursor-pointer ${
-                  selectedFile === name ? "bg-gray-800" : ""
+                className={`max-w-[80%] rounded-lg p-3 ${
+                  message.role === 'user'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-gray-800 text-gray-200'
                 }`}
-                key={index}
-                onClick={() => {
-                  setSelectedFile(name);
-                  setFileContent(folderStructure[name]);
-                }}
               >
-                <p>{name}</p>
-                <p className="text-[10px]" onClick={() => {}}>
-                  X
-                </p>
+                {message.content}
               </div>
-            ))}
+            </div>
+          ))}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="bg-gray-800 text-gray-200 rounded-lg p-3">
+                Generating code...
+              </div>
+            </div>
+          )}
         </div>
-
-        {/* {selectedFile && (
-          <div className="flex-1 p-4 file-result-container bg-gray-800">
-            <MonacoEditor
-              language="csharp"
-              value={fileContent}
-              theme="vs-dark"
-              onChange={(value) => setFileContent(value as string)}
+        <form onSubmit={handleSubmit} className="p-4 border-t border-gray-700">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Describe your smart contract requirements..."
+              className="flex-1 bg-gray-800 text-white rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={loading}
             />
+            <Button 
+              type="submit" 
+              disabled={loading || !inputValue.trim()}
+              className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              Send
+            </Button>
           </div>
-        )} */}
+        </form>
       </div>
     </div>
   );
 }
 
 export default function Home() {
-  return (
-    <div className="flex">
-      <MainContent />
-      <div
-        className="w-[500px] h-screen"
-        style={
-          {
-            "--copilot-kit-background-color": "#111827",
-            "--copilot-kit-secondary-color": "rgb(31 41 55 / 1)",
-            "--copilot-kit-secondary-contrast-color": "#FFFFFF",
-            "--copilot-kit-primary-color": "rgb(31 41 55 / 1)",
-            "--copilot-kit-contrast-color": "#FFFFFF",
-            "--copilot-kit-separator-color": "#FFF3",
-          } as any
-        }
-      >
-        <CopilotChat
-          className="h-full"
-          instructions="I am an AI assistant specialized in helping you generate and understand code for the Aelf blockchain ecosystem. I can help you with smart contracts, dApps, and other blockchain-related development tasks."
-          labels={{
-            title: "AElf Assistant",
-            initial: "How can I help you with your Aelf development today?",
-          }}
-        />
-      </div>
-    </div>
-  );
+  return <MainContent />;
 }

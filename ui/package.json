@@ -10,10 +10,11 @@
   },
   "dependencies": {
     "@copilotkit/backend": "^0.37.0",
-    "@copilotkit/react-core": "^1.5.11",
-    "@copilotkit/react-textarea": "^1.5.11",
-    "@copilotkit/react-ui": "^1.5.11",
+    "@copilotkit/react-core": "^1.5.17",
+    "@copilotkit/react-textarea": "^1.5.17",
+    "@copilotkit/react-ui": "^1.5.17",
     "@copilotkit/runtime": "^1.5.11",
+    "@copilotkit/runtime-client-gql": "^1.5.17",
     "@copilotkit/shared": "^1.5.11",
     "@monaco-editor/react": "^4.6.0",
     "@radix-ui/react-tabs": "^1.1.2",
@@ -28,6 +29,7 @@
     "openai-edge": "^1.2.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-syntax-highlighter": "^15.6.1",
     "tailwind-merge": "^2.6.0"
   },
   "devDependencies": {
@@ -35,6 +37,7 @@
     "@types/node": "^20.17.12",
     "@types/react": "^19.0.5",
     "@types/react-dom": "^19",
+    "@types/react-syntax-highlighter": "^15.5.13",
     "@types/webpack": "^5.28.5",
     "eslint": "^9",
     "eslint-config-next": "15.1.4",

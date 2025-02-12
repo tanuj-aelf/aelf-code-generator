@@ -12,6 +12,13 @@ ui/node_modules/
 !.yarn/releases
 !.yarn/versions
 
+# Package lock files
+package-lock.json
+**/package-lock.json
+ui/package-lock.json
+yarn.lock
+**/yarn.lock
+
 # testing
 /coverage
 
@@ -33,8 +40,17 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# env files (except .env.local)
+.env
+.env.development
+.env.test
+.env.production
+**/.env
+**/.env.development
+**/.env.test
+**/.env.production
+!.env.local
+!**/.env.local
 
 # vercel
 .vercel

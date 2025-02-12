@@ -109,7 +109,7 @@ async def handle_messages(messages: List[Dict[str, str]]) -> JSONResponse:
 
 # Add custom endpoint handlers
 @app.post("/copilotkit")
-@app.post("/copilotkit/")
+@app.post("/copilotkit/generate")
 async def copilotkit_endpoint(request: Request):
     """Handle requests to the copilotkit endpoint."""
     try:
