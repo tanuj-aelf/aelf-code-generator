@@ -21,6 +21,7 @@
     "ai": "^4.0.33",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "framer-motion": "^12.4.2",
     "graphql": "^16.10.0",
     "langchain": "^0.3.11",
     "langsmith": "^0.2.15",
