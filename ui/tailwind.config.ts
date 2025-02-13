@@ -11,8 +11,16 @@ export default {
       colors: {
         background: "var(--background)",
         foreground: "var(--foreground)",
+        gray: {
+          750: "#2D3748", // Custom gray color for hover states
+        },
+      },
+      backgroundColor: {
+        'gray-750': '#2D3748',
       },
     },
   },
-  plugins: [],
+  plugins: [
+    require('tailwind-scrollbar')({ nocompatible: true }),
+  ],
 } satisfies Config;
