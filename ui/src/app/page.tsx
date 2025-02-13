@@ -9,6 +9,7 @@ import { useFileSystem } from "@/hooks/useFileSystem";
 import { useChat } from "@/hooks/useChat";
 import { AgentResponse } from "@/types";
 import { motion, AnimatePresence } from "framer-motion"; // You'll need to install framer-motion
+import { benifits } from "@/lib/constants";
 
 const formatFlatObject = (flatData: Record<string, string>) => {
   const nestedObject: Record<string, any> = {};
@@ -107,7 +108,7 @@ function MainContent() {
                 AElf Code Generator
               </h1>
               <p className="text-gray-400 text-lg max-w-2xl">
-                Generate smart contracts effortlessly using natural language. 
+                Generate smart contracts effortlessly using csharp language. 
                 Describe your requirements or choose from our templates below.
               </p>
             </motion.div>
@@ -135,23 +136,7 @@ function MainContent() {
               transition={{ delay: 0.3 }}
               className="mt-12 grid grid-cols-3 gap-6 max-w-3xl"
             >
-              {[
-                {
-                  title: "Natural Language",
-                  description: "Describe your contract in plain English",
-                  icon: "💬",
-                },
-                {
-                  title: "Best Practices",
-                  description: "Generated code follows security standards",
-                  icon: "🛡️",
-                },
-                {
-                  title: "Ready to Deploy",
-                  description: "Get production-ready smart contracts",
-                  icon: "🚀",
-                },
-              ].map((feature, index) => (
+              {benifits.map((feature, index) => (
                 <div
                   key={index}
                   className="text-center p-4 rounded-lg bg-gray-800/30 border border-gray-700"

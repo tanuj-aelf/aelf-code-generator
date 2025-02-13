@@ -25,7 +25,7 @@ interface ChatWindowProps {
   };
 
   return (
-    <div className={`flex flex-col ${fullScreen ? 'h-[80vh] bg-gray-800 rounded-lg shadow-xl' : 'h-full'}`}>
+    <div className={`flex flex-col ${fullScreen ? 'h-[80vh] bg-gray-800 rounded-2xl shadow-xl' : 'h-full'}`}>
       <ChatHeader fullScreen={fullScreen} />
       
       <div className="flex-1 overflow-auto">
