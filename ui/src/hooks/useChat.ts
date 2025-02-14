@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState } from "react";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -35,7 +35,12 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          prompt: userMessage,
+          messages: [
+            {
+              role: "user",
+              content: userMessage,
+            },
+          ],
         }),
       });
 
@@ -83,4 +88,4 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
     handleSubmit,
     setMessages,
   };
-}; 
+};

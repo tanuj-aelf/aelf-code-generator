@@ -1,11 +1,8 @@
 import { useState } from 'react';
-
-interface FolderStructure {
-  [key: string]: string | FolderStructure;
-}
+import { FileContent } from '@/db/db';
 
 export const useFileSystem = () => {
-  const [folderStructure, setFolderStructure] = useState<FolderStructure>({});
+  const [files, setFiles] = useState<FileContent[]>([]);
   const [selectedFile, setSelectedFile] = useState<string>("");
   const [selectedFilesArray, setSelectedFilesArray] = useState<string[]>([]);
   const [fileContent, setFileContent] = useState<string>("");
@@ -17,23 +14,21 @@ export const useFileSystem = () => {
       prev.includes(path) ? prev : [...prev, path]
     );
     
-    // Get content from folder structure
-    const content = getFileContent(folderStructure, path);
-    if (content) setFileContent(content);
+    // Get content from files array
+    const file = files.find(f => f.path === path);
+    if (file) setFileContent(file.contents);
   };
 
   const handleFileClose = (path: string) => {
     const newArray = selectedFilesArray.filter(file => file !== path);
     setSelectedFilesArray(newArray);
     
-    // If we're closing the currently selected file
     if (path === selectedFile) {
-      // Select the last file in the remaining array, or clear selection if empty
       if (newArray.length > 0) {
         const lastFile = newArray[newArray.length - 1];
         setSelectedFile(lastFile);
-        const content = getFileContent(folderStructure, lastFile);
-        if (content) setFileContent(content);
+        const file = files.find(f => f.path === lastFile);
+        if (file) setFileContent(file.contents);
       } else {
         setSelectedFile("");
         setFileContent("");
@@ -53,25 +48,12 @@ export const useFileSystem = () => {
     });
   };
 
-  const getFileContent = (structure: FolderStructure, path: string): string => {
-    const parts = path.split("/");
-    let current: string | FolderStructure = structure;
-
-    for (const part of parts) {
-      if (typeof current === "string") return current;
-      current = current[part];
-      if (!current) return "";
-    }
-
-    return typeof current === "string" ? current : "";
-  };
-
-  const updateFolderStructure = (newStructure: FolderStructure) => {
-    setFolderStructure(newStructure);
+  const updateFiles = (newFiles: FileContent[]) => {
+    setFiles(newFiles);
   };
 
   return {
-    folderStructure,
+    files,
     selectedFile,
     selectedFilesArray,
     fileContent,
@@ -79,7 +61,7 @@ export const useFileSystem = () => {
     handleFileSelect,
     handleFileClose,
     handleFolderToggle,
-    updateFolderStructure,
+    updateFiles,
     setFileContent,
   };
 }; 
