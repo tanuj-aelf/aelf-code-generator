@@ -20,3 +20,7 @@
     /* background-color: #111827  !important */
     background-color: rgb(31 41 55 / 1) !important;
 }
+
+.editor-container {
+    width: calc(100vw - 730px);
+}

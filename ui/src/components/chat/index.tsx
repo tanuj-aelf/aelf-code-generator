@@ -20,6 +20,7 @@ interface ChatWindowProps {
     onSubmit,
     fullScreen = false,
   }: ChatWindowProps) => {
+    
   const handleSuggestionClick = (prompt: string) => {
     onInputChange(prompt);
   };
@@ -28,11 +29,11 @@ interface ChatWindowProps {
     <div className={`flex flex-col ${fullScreen ? 'h-[80vh] bg-gray-800 rounded-2xl shadow-xl' : 'h-full'}`}>
       <ChatHeader fullScreen={fullScreen} />
       
-      <div className="flex-1 overflow-auto">
+      <div className="flex-1 overflow-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-gray-900">
         {messages.length === 0 ? (
           <ChatSuggestions onSuggestionClick={handleSuggestionClick} />
         ) : (
-          <div className="p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-gray-900">
+          <div className="p-4 space-y-4">
             {messages.map((message, index) => (
               <div
                 key={index}
