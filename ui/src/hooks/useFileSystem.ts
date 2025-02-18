@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FileContent } from '@/db/db';
+import { FileContent } from '@/data/db';
 
 export const useFileSystem = () => {
   const [files, setFiles] = useState<FileContent[]>([]);

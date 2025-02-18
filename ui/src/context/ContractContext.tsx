@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { FileContent } from '@/db/db';
+import { FileContent } from '@/data/db';
 
 interface ContractContextType {
   files: FileContent[];
@@ -14,6 +14,7 @@ interface ContractContextType {
   handleFolderToggle: (path: string) => void;
   updateFiles: (newFiles: FileContent[]) => void;
   setFileContent: (content: string) => void;
+  handleCollapseFolder: ()=> void;
 }
 
 const ContractContext = createContext<ContractContextType | undefined>(undefined);
@@ -63,6 +64,10 @@ export const ContractProvider = ({ children }: { children: ReactNode }) => {
     });
   };
 
+  const handleCollapseFolder = () => {
+    setExpandedFolders(new Set());
+  }
+
   const updateFiles = (newFiles: FileContent[]) => {
     setFiles(newFiles);
   };
@@ -79,6 +84,7 @@ export const ContractProvider = ({ children }: { children: ReactNode }) => {
       handleFolderToggle,
       updateFiles,
       setFileContent,
+      handleCollapseFolder
     }}>
       {children}
     </ContractContext.Provider>

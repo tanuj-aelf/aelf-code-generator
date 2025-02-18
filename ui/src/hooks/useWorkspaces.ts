@@ -1,4 +1,4 @@
-import { db } from "@/db/db";
+import { db } from "@/data/db";
 import useSWR from "swr";
 
 export function useWorkspaces() {

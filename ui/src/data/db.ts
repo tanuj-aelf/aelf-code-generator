@@ -12,15 +12,21 @@ interface Workspace {
   dll: string;
 }
 
+interface Wallet {
+  privateKey: string;
+}
+
 const db = new Dexie("aelfAI") as Dexie & {
   files: EntityTable<File, "path">;
   workspaces: EntityTable<Workspace, "name">;
+  wallet: EntityTable<Wallet, "privateKey">;
 };
 
 // Schema declaration:
 db.version(1).stores({
   files: "path, contents",
   workspaces: "name, template, dll",
+  wallet: "privateKey",
 });
 
 // async function decodeKeys() {
@@ -42,14 +48,17 @@ db.version(1).stores({
 //   });
 // }
 
-db.open().then(() => {
-  console.log('Database opened successfully');
-  // return decodeKeys();
-}).then(() => {
-  console.log('Database initialisation complete');
-}).catch((err) => {
-  console.error('Failed to open db: ' + (err.stack || err));
-});
+db.open()
+  .then(() => {
+    console.log("Database opened successfully");
+    // return decodeKeys();
+  })
+  .then(() => {
+    console.log("Database initialisation complete");
+  })
+  .catch((err) => {
+    console.error("Failed to open db: " + (err.stack || err));
+  });
 
-export type { File as FileContent, Workspace };
+export type { File as FileContent, Workspace, Wallet };
 export { db };

@@ -1,0 +1,15 @@
+.contract-view-container{
+    background-color: transparent !important;
+    border: 1px solid #fff3;
+    max-height: calc(100vh - 120px);
+    scrollbar-width: thin;
+    scrollbar-color: #374151 #111827;
+}
+
+.contract-view-container header {
+   border-bottom-width: 1px !important;
+}
+
+#_rht_toaster {
+    color: black !important;
+}

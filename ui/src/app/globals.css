@@ -22,5 +22,19 @@
 }
 
 .editor-container {
-    width: calc(100vw - 730px);
+    max-width: calc(100vw - 730px);
 }
+
+.private-key {
+    width: max-content;
+    > p {
+      filter: blur(8px);
+      user-select: none;
+  
+      &.key-visible {
+        filter: none;
+        user-select: auto;
+      }
+    }
+  }
+  

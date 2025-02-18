@@ -2,72 +2,84 @@
 
 import { MainLayout } from "@/components/layout/MainLayout";
 import { ChatWindow } from "@/components/chat";
-import { useChat } from "@/hooks/useChat";
-import { AgentResponse } from "@/types";
 import { motion, AnimatePresence } from "framer-motion";
-import { db, FileContent } from "@/db/db";
+import { db } from "@/data/db";
 import { benifits } from "@/lib/constants";
-import { useWorkspaces } from "@/hooks/useWorkspaces";
 import { Header } from "@/components/header";
-import { useContract } from "@/context/ContractContext";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Loader } from "@/components/ui/icons";
+import { useEffect } from "react";
+import { useShare } from "@/data/client";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export default function Home() {
-  const { data: workspaces } = useWorkspaces();
-  const { handleFileSelect, updateFiles } = useContract();
+  const searchParams = useSearchParams();
+  const shareId = searchParams.get("share");
+  const { data, isLoading } = useShare(shareId || "");
+
   const router = useRouter();
-  const { messages, loading, inputValue, handleInputChange, handleSubmit } =
-    useChat({
-      onSuccess: async (data: AgentResponse) => {
-        // Convert the API response to our FileContent format
-        const allFiles = [
-          data.generate._internal.output.contract,
-          data.generate._internal.output.state,
-          data.generate._internal.output.proto,
-          data.generate._internal.output.reference,
-          data.generate._internal.output.project,
-          ...(data.generate._internal.output.metadata || []),
-        ]
-          .filter(
-            (
-              file
-            ): file is { path: string; content: string; file_type: string } =>
-              Boolean(file?.path && file?.content)
-          )
-          .map(
-            (file): FileContent => ({
-              path: file.path,
-              contents: file.content,
-            })
+
+  useEffect(() => {
+    if (shareId) {
+      const importWorkspace = async () => {
+        if (!data?.files || !shareId) return;
+
+        const existing = await db.workspaces.get(shareId);
+
+        if (existing) {
+          router.push(`/${shareId}`);
+        } else {
+          await db.workspaces.add({
+            name: shareId,
+            template: shareId,
+            dll: "",
+          });
+
+          await db.files.bulkAdd(
+            data.files.map(({ path, contents }) => ({
+              path: `/workspace/${shareId}/${path}`,
+              contents,
+            }))
           );
-
-        // Update files in the file system
-        updateFiles(allFiles);
-
-        const projectName = `project-${(workspaces?.length ?? 0) + 1}`;
-
-        await db.workspaces.add({
-          name: projectName,
-          template: "",
-          dll: "",
-        });
-
-        await db.files.bulkAdd(
-          allFiles.map(({ path, contents }) => ({
-            path: `/workspace/${projectName}/${path}`,
-            contents,
-          }))
-        );
-
-        router.push(`/${projectName}`);
-
-        // Select the first file by default
-        if (allFiles.length > 0) {
-          const firstFile = allFiles[0].path;
-          handleFileSelect(firstFile);
+          router.push(`/${shareId}`);
         }
-      },
-    });
+      };
+
+      importWorkspace();
+    }
+  }, [shareId, data?.files]);
+
+  if (shareId) {
+    if (data?.success === false) {
+      return (
+        <Dialog open onOpenChange={() => router.push("/")}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Error</DialogTitle>
+              <DialogDescription>{data.message}</DialogDescription>
+            </DialogHeader>
+          </DialogContent>
+        </Dialog>
+      );
+    }
+    if (isLoading) {
+      return (
+        <MainLayout fullScreen>
+          <div className="flex h-screen w-full items-center justify-center">
+            <h3 className="text-white flex items-center gap-2 text-sm bg-gray-800 py-3 px-7 rounded-full">
+              <Loader /> Getting Shared Details...
+            </h3>
+          </div>
+        </MainLayout>
+      );
+    }
+  }
 
   return (
     <MainLayout fullScreen={true} className={"pt-5"}>
@@ -78,7 +90,7 @@ export default function Home() {
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.95 }}
           transition={{ duration: 0.3, ease: "easeOut" }}
-          className="flex-1 flex flex-col items-center justify-center min-h-screen bg-gray-900 p-6 pt-20"
+          className="flex-1 flex flex-col items-center justify-center min-h-screen bg-gray-900 p-6 pt-20 scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-gray-900 overflow-hidden"
         >
           <motion.div
             initial={{ y: 20, opacity: 0 }}
@@ -98,14 +110,7 @@ export default function Home() {
             transition={{ delay: 0.2 }}
             className="w-full max-w-3xl bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-2xl border border-gray-700"
           >
-            <ChatWindow
-              messages={messages}
-              loading={loading}
-              inputValue={inputValue}
-              onInputChange={handleInputChange}
-              onSubmit={handleSubmit}
-              fullScreen
-            />
+            <ChatWindow fullScreen />
           </motion.div>
 
           {/* Optional: Add some features or benefits section */}

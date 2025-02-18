@@ -1,6 +1,6 @@
 interface MainLayoutProps {
-  children: React.ReactNode;
-  fullScreen: boolean;
+  children?: React.ReactNode;
+  fullScreen?: boolean;
   className?: string;
 }
 
