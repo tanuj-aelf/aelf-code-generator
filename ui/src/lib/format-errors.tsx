@@ -61,7 +61,7 @@ export function FormatErrors({ inputString }: { inputString?: string }) {
 
 function TestResult({ test }: { test: ITest }) {
   return (
-    <tr className="border border-black">
+    <tr className="border border-gray-700">
       <td className="p-2">
         <Badge variant={test.status === "passed" ? "default" : "destructive"}>
           {test.status}
@@ -81,7 +81,7 @@ function ErrorMessage({ message }: { message: string }) {
   const [path, type, ...description] = message.split(":").map((i) => i.trim());
 
   return (
-    <tr className="border border-black">
+    <tr className="border bborder-gray-700">
       <td className="p-2">{path}</td>
       <td className="p-2">
         <ErrorTypeLink type={type} />

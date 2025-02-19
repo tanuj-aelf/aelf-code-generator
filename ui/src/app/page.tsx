@@ -1,14 +1,15 @@
 "use client";
 
+import { useEffect } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+
 import { MainLayout } from "@/components/layout/MainLayout";
 import { ChatWindow } from "@/components/chat";
-import { motion, AnimatePresence } from "framer-motion";
 import { db } from "@/data/db";
 import { benifits } from "@/lib/constants";
 import { Header } from "@/components/header";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Loader } from "@/components/ui/icons";
-import { useEffect } from "react";
 import { useShare } from "@/data/client";
 import {
   Dialog,

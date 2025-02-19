@@ -1,9 +1,31 @@
 "use client";
 
 import Link from "next/link";
-import ProjectDropdown from "./project-dropdown";
-import { Button } from "../ui/button";
 import { useRouter } from "next/navigation";
+import { Button } from "../ui/button";
+
+const NAV_ARRAY = [
+  {
+    id: "1",
+    name: "Deployments",
+    url: "/deployments",
+  },
+  {
+    id: "2",
+    name: "Contract Viewer",
+    url: "/contract-viewer",
+  },
+  {
+    id: "3",
+    name: "Wallet",
+    url: "/wallet",
+  },
+  {
+    id: "4",
+    name: "Projects",
+    url: "/projects",
+  },
+];
 
 export const Header = () => {
   const router = useRouter();
@@ -18,35 +40,17 @@ export const Header = () => {
             </h1>
           </Link>
         </div>
-        <div className="flex items-center space-x-4">
-          <Button
-            variant="ghost"
-            className="text-gray-300 hover:text-white"
-            onClick={() => router.push("/deployments")}
-          >
-            Deployments
-          </Button>
-          <Button
-            variant="ghost"
-            className="text-gray-300 hover:text-white"
-            onClick={() => router.push("/contract-viewer")}
-          >
-            Contract Viewer
-          </Button>
-          <Button
-            variant="ghost"
-            className="text-gray-300 hover:text-white"
-            onClick={() => router.push("/wallet")}
-          >
-            Wallet
-          </Button>
-          <ProjectDropdown />
-          {/* <Button
-            variant="outline"
-            className="text-white px-3 bg-gray-800 hover:bg-gray-700"
-          >
-            <BurgetMenu />
-          </Button> */}
+        <div className="flex items-center space-x-2">
+          {NAV_ARRAY.map(({ name, url, id }) => (
+            <Button
+              key={id}
+              variant="ghost"
+              className="text-gray-300 hover:text-white"
+              onClick={() => router.push(url)}
+            >
+              {name}
+            </Button>
+          ))}
         </div>
       </div>
     </header>

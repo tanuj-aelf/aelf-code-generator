@@ -18,7 +18,7 @@ import { Loader2 } from "lucide-react";
 import { Input } from "../ui/input";
 import { usePathname } from "next/navigation";
 import { db } from "@/data/db";
-import { useRefreshFileExplorer } from "./FileExplorer";
+import { useRefreshFileExplorer } from "./file-explorer";
 
 const FormSchema = z.object({
   path: z.string(),

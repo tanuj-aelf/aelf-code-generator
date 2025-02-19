@@ -41,7 +41,7 @@ class Wallet {
   }
 
   private getContract(address: string) {
-    return aelf.chain.contractAt(address, this.wallet);
+    return aelf.chain.contractAt(address, this.wallet, {});
   }
 
   private async getGenesisContract() {

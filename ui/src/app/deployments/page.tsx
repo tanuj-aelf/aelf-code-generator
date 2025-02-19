@@ -22,7 +22,7 @@ const Deployments = () => {
 
   return (
     <MainLayout className="flex flex-col min-h-screen bg-gray-900 p-8 pt-[100px]">
-      <div className="container mx-auto">
+      <div className="max-w-[1536px] w-full mx-auto">
         <h2 className="text-2xl text-white font-semibold mb-6">
           Deployment History
         </h2>
@@ -32,7 +32,7 @@ const Deployments = () => {
         ) : (
           deployments && (
             <div className="mb-2">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-6">
                 {deployments.map((deployment, index) => (
                   <DeploymentCard key={index} deployment={deployment}/>
                 ))}

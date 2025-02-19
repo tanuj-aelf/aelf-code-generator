@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Loader2 } from "lucide-react";
-import { useRefreshFileExplorer } from "./FileExplorer";
+import { useRefreshFileExplorer } from "./file-explorer";
 import { usePathname } from "next/navigation";
 import { db } from "@/data/db";
 
@@ -50,7 +50,7 @@ export function NewFileForm({
       });
       await refreshFileExplorer();
       onSubmit?.(data.path);
-    } catch (err) {
+    } catch (_) {
       form.setError("path", { message: "Path already exists." });
     }
   }

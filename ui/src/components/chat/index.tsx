@@ -6,6 +6,7 @@ import { useChat } from "@/hooks/useChat";
 import { db, FileContent } from "@/data/db";
 import { useContract } from "@/context/ContractContext";
 import { useWorkspaces } from "@/hooks/useWorkspaces";
+import { Loader } from "../ui/icons";
 
 interface ChatWindowProps {
   fullScreen?: boolean;
@@ -18,55 +19,16 @@ export const ChatWindow = ({ fullScreen = false }: ChatWindowProps) => {
   const { messages, loading, inputValue, handleInputChange, handleSubmit } =
     useChat({
       onSuccess: async (data: AgentResponse) => {
-        // Convert the API response to our FileContent format
-        const allFiles = [
-          data.generate._internal.output.contract,
-          data.generate._internal.output.state,
-          data.generate._internal.output.proto,
-          data.generate._internal.output.reference,
-          data.generate._internal.output.project,
-          ...(data.generate._internal.output.metadata || []),
-        ]
-          .filter(
-            (
-              file
-            ): file is { path: string; content: string; file_type: string } =>
-              Boolean(file?.path && file?.content)
-          )
-          .map(
-            (file): FileContent => ({
-              path: file.path,
-              contents: file.content,
-            })
-          );
-
-        // Update files in the file system
+        const allFiles: FileContent[] = extractFiles(data);
         updateFiles(allFiles);
-        await db.workspaces.add({
-          name: `project-${(workspaces?.length ?? 0) + 1}`,
-          template: "",
-          dll: "",
-        });
-
-        await db.files.bulkAdd(
-          allFiles.map(({ path, contents }) => ({
-            path: `/workspace/project/${path}`,
-            contents,
-          }))
-        );
+        await saveWorkspaceData(workspaces?.length ?? 0, allFiles);
       },
     });
 
-  const handleSuggestionClick = (prompt: string) => {
-    handleInputChange(prompt);
-  };
+  const handleSuggestionClick = (prompt: string) => handleInputChange(prompt);
 
   return (
-    <div
-      className={`flex flex-col ${
-        fullScreen ? "h-[80vh] bg-gray-800 rounded-2xl shadow-xl" : "h-full"
-      }`}
-    >
+    <div className={`flex flex-col ${fullScreen ? "h-[80vh] bg-gray-800 rounded-2xl shadow-xl" : "h-full"}`}>
       <ChatHeader fullScreen={fullScreen} />
       <div className="flex-1 overflow-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-gray-900">
         {messages.length === 0 ? (
@@ -74,104 +36,12 @@ export const ChatWindow = ({ fullScreen = false }: ChatWindowProps) => {
         ) : (
           <div className="p-4 space-y-4">
             {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex items-start space-x-2 ${
-                  message.role === "user"
-                    ? "flex-row-reverse space-x-reverse"
-                    : "flex-row"
-                }`}
-              >
-                <div
-                  className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
-                  ${message.role === "user" ? "bg-blue-600" : "bg-gray-700"}`}
-                >
-                  {message.role === "user" ? (
-                    <svg
-                      className="w-4 h-4 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"
-                      />
-                    </svg>
-                  ) : (
-                    <svg
-                      className="w-4 h-4 text-white"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                      stroke="currentColor"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                      />
-                    </svg>
-                  )}
-                </div>
-
-                <div
-                  className={`flex flex-col max-w-[75%] ${
-                    message.role === "user" ? "items-end" : "items-start"
-                  }`}
-                >
-                  <div
-                    className={`rounded-2xl px-4 py-2 shadow-md ${
-                      message.role === "user"
-                        ? "bg-blue-600 text-white rounded-br-none"
-                        : "bg-gray-800 text-gray-200 rounded-bl-none"
-                    }`}
-                  >
-                    <p className="text-sm whitespace-pre-wrap">
-                      {message.content}
-                    </p>
-                  </div>
-                  <span className="text-xs text-gray-500 mt-1">
-                    {message.role === "user" ? "You" : "Assistant"}
-                  </span>
-                </div>
-              </div>
+              <ChatMessage key={index} message={message} />
             ))}
-
-            {loading && (
-              <div className="flex items-start space-x-2">
-                <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
-                  <svg
-                    className="w-4 h-4 text-white animate-spin"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    ></circle>
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                    ></path>
-                  </svg>
-                </div>
-                <div className="bg-gray-800 text-gray-200 rounded-2xl rounded-bl-none px-4 py-2 shadow-md">
-                  <p className="text-sm">Generating code...</p>
-                </div>
-              </div>
-            )}
+            {loading && <LoadingIndicator />}
           </div>
         )}
       </div>
-
       <ChatInput
         value={inputValue}
         onChange={handleInputChange}
@@ -182,3 +52,58 @@ export const ChatWindow = ({ fullScreen = false }: ChatWindowProps) => {
     </div>
   );
 };
+
+const extractFiles = (data: AgentResponse): FileContent[] => {
+  return [
+    data.generate._internal.output.contract,
+    data.generate._internal.output.state,
+    data.generate._internal.output.proto,
+    data.generate._internal.output.reference,
+    data.generate._internal.output.project,
+    ...(data.generate._internal.output.metadata || []),
+  ]
+    .filter((file): file is { path: string; content: string } => Boolean(file?.path && file?.content))
+    .map((file) => ({ path: file.path, contents: file.content }));
+};
+
+const saveWorkspaceData = async (workspaceCount: number, allFiles: FileContent[]) => {
+  await db.workspaces.add({ name: `project-${workspaceCount + 1}`, template: "", dll: "" });
+  await db.files.bulkAdd(
+    allFiles.map(({ path, contents }) => ({ path: `/workspace/project/${path}`, contents }))
+  );
+};
+
+const ChatMessage = ({ message }: { message: { role: string; content: string } }) => (
+  <div className={`flex items-start space-x-2 ${message.role === "user" ? "flex-row-reverse space-x-reverse" : "flex-row"}`}>
+    <UserAvatar role={message.role} />
+    <div className={`flex flex-col max-w-[75%] ${message.role === "user" ? "items-end" : "items-start"}`}>
+      <MessageBubble message={message} />
+      <span className="text-xs text-gray-500 mt-1">{message.role === "user" ? "You" : "Assistant"}</span>
+    </div>
+  </div>
+);
+
+const UserAvatar = ({ role }: { role: string }) => (
+  <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${role === "user" ? "bg-blue-600" : "bg-gray-700"}`}>
+    <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={role === "user" ? "M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" : "M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"} />
+    </svg>
+  </div>
+);
+
+const MessageBubble = ({ message }: { message: { role: string; content: string } }) => (
+  <div className={`rounded-2xl px-4 py-2 shadow-md ${message.role === "user" ? "bg-blue-600 text-white rounded-br-none" : "bg-gray-800 text-gray-200 rounded-bl-none"}`}>
+    <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+  </div>
+);
+
+const LoadingIndicator = () => (
+  <div className="flex items-start space-x-2">
+    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gray-700 flex items-center justify-center">
+      <Loader className="mr-0 text-white"/>
+    </div>
+    <div className="bg-gray-800 text-gray-200 rounded-2xl rounded-bl-none px-4 py-2 shadow-md">
+      <p className="text-sm">Generating code...</p>
+    </div>
+  </div>
+);

@@ -1,14 +1,14 @@
 import React from "react";
+import { useRouter } from "next/navigation";
+
 import { Button } from "./button";
 import { BurgetMenu, Copy } from "./icons";
-import Link from "next/link";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./dropdown-menu";
-import { useRouter } from "next/navigation";
 
 interface IProps {
   deployment: { time: string; address: string };
@@ -44,7 +44,7 @@ const DeploymentCard = (props: IProps) => {
         <h2 className="text-sm text-white pl-1 my-1">Address:</h2>
         <Button
           variant="outline"
-          className="text-[13px] text-white mt-2 p-3 mb-10 w-full justify-between"
+          className="text-[10px] lg:text-[11px] xl:text-[13px] text-white mt-2 p-3 mb-10 w-full justify-between gap-2"
           onClick={() => {
             navigator.clipboard.writeText(address);
           }}

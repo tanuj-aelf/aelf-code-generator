@@ -1,7 +1,7 @@
 "use client";
 
 import { MainLayout } from "@/components/layout/MainLayout";
-import { FileExplorer } from "@/components/file-explorer/FileExplorer";
+import { FileExplorer } from "@/components/file-explorer/file-explorer";
 import { CodeEditor } from "@/components/editor/CodeEditor";
 import { ChatWindow } from "@/components/chat";
 

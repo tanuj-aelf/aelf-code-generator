@@ -23,9 +23,9 @@ export const ExpandableIcon = ({ isExpanded }: { isExpanded: boolean }) => (
   </span>
 );
 
-export const Loader = () => (
+export const Loader = ({className}: {className?:string}) => (
   <svg
-    className="animate-spin -ml-1 mr-2 h-4 w-4"
+    className={`animate-spin -ml-1 mr-2 h-4 w-4 ${className ? className : ''}`}
     fill="none"
     viewBox="0 0 24 24"
   >
@@ -47,7 +47,7 @@ export const Loader = () => (
 
 export const Terminal = () => (
   <svg
-    className="w-4 h-4 mr-2"
+    className="w-4 h-4 xl:mr-2"
     fill="none"
     viewBox="0 0 24 24"
     stroke="currentColor"
@@ -63,7 +63,7 @@ export const Terminal = () => (
 
 export const Deploy = () => (
   <svg
-    className="w-4 h-4 mr-2"
+    className="w-4 h-4 xl:mr-2"
     stroke="currentColor"
     fill="currentColor"
     strokeWidth="0"
@@ -89,13 +89,13 @@ export const Deploy = () => (
 
 export const Export = () => (
   <svg
-    className="w-4 h-4 mr-2"
+    className="w-4 h-4 xl:mr-2"
     stroke="currentColor"
     fill="none"
     strokeWidth="2"
     viewBox="0 0 24 24"
     strokeLinecap="round"
-    strokeLinejoin="round"   
+    strokeLinejoin="round"
     xmlns="http://www.w3.org/2000/svg"
   >
     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
@@ -206,5 +206,26 @@ export const Copy = () => (
       strokeWidth="32"
       d="m383.5 128 .5-24a56.16 56.16 0 0 0-56-56H112a64.19 64.19 0 0 0-64 64v216a56.16 56.16 0 0 0 56 56h24"
     ></path>
+  </svg>
+);
+
+export const HandCoins = ({className}: {className: string}) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className={className}
+  >
+    <path d="M11 15h2a2 2 0 1 0 0-4h-3c-.6 0-1.1.2-1.4.6L3 17"></path>
+    <path d="m7 21 1.6-1.4c.3-.4.8-.6 1.4-.6h4c1.1 0 2.1-.4 2.8-1.2l4.6-4.4a2 2 0 0 0-2.75-2.91l-4.2 3.9"></path>
+    <path d="m2 16 6 6"></path>
+    <circle cx="16" cy="9" r="2.9"></circle>
+    <circle cx="6" cy="5" r="3"></circle>
   </svg>
 );

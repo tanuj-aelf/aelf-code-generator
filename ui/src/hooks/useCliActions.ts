@@ -1,14 +1,17 @@
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { v4 as uuidv4 } from "uuid";
 import { saveAs } from "file-saver";
 
 import { db, FileContent } from "@/data/db";
 import { fileContentToZip } from "@/lib/file-content-to-zip";
 import { useWallet } from "@/data/wallet";
+import { AuditType, uploadContractCode } from "@/data/audit";
+import { Message } from "@copilotkit/runtime-client-gql";
 
 export function useCliCommands() {
   const workspaceName = usePathname().replace("/", "");
   const wallet = useWallet();
+  const searchParams = useSearchParams();
 
   const buildService = async (files: FileContent[]) => {
     const zippedData = fileContentToZip(files);
@@ -91,6 +94,42 @@ export function useCliCommands() {
   };
 
   const actions = {
+    audit: async (auditType: AuditType) => {
+      const start = `/workspace/${workspaceName}/`;
+      const files = (
+        await db.files.filter((file) => file.path.startsWith(start)).toArray()
+      )
+        .map((file) => ({
+          path: decodeURIComponent(file.path.replace(start, "")),
+          contents: file.contents,
+        }))
+        .filter((i) => i.path.startsWith("src"));
+
+      try {
+        const codeHash = await uploadContractCode(auditType, files);
+
+        if (!wallet) return;
+
+        const params = new URLSearchParams(searchParams);
+        params.set("auditId", codeHash);
+        params.set("auditType", auditType);
+
+        const { TransactionId } = await wallet.auditTransfer(codeHash);
+
+        return {
+          success: true,
+          codeHash: codeHash,
+          auditType: auditType,
+          transactionId: TransactionId,
+          message: ""
+        };
+      } catch (err) {
+        return {
+          success: false,
+          message: err instanceof Error ? err.message : "Something Went Wrong",
+        };
+      }
+    },
     build: async () => {
       if (typeof workspaceName !== "string")
         throw new Error("id is not string");
@@ -209,7 +248,11 @@ export function useCliCommands() {
 
         if (!id) throw new Error("error");
 
-        return { success: true, link: `${window.location.origin}?share=${id}`, message: "" };
+        return {
+          success: true,
+          link: `${window.location.origin}?share=${id}`,
+          message: "",
+        };
       } catch (err) {
         return {
           success: false,

@@ -24,7 +24,7 @@ export function FileContextMenu({ children, handleClick }: IContextMenuProps) {
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent
-        className="w-64"
+        className="w-35"
         onClick={(e) => {
           e.stopPropagation();
         }}
@@ -44,7 +44,7 @@ export function FolderContextMenu({
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent
-        className="w-64"
+        className="w-35"
         onClick={(e) => {
           e.stopPropagation();
         }}

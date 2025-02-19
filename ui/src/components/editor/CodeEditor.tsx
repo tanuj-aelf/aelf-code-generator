@@ -5,7 +5,7 @@ import { db } from "@/data/db";
 import React from "react";
 import { useContract } from "@/context/ContractContext";
 import { usePathname } from "next/navigation";
-import { useRefreshFileExplorer } from "../file-explorer/FileExplorer";
+import { useRefreshFileExplorer } from "../file-explorer/file-explorer";
 
 export const CodeEditor = () => {
   const workspaceName = usePathname();

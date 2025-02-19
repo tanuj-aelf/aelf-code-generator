@@ -10,6 +10,8 @@
    border-bottom-width: 1px !important;
 }
 
-#_rht_toaster {
+#_rht_toaster *{
     color: black !important;
+    font-weight: 600;
+    font-size: 14px;
 }
