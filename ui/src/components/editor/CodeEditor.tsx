@@ -1,11 +1,13 @@
+import React from "react";
+import { usePathname } from "next/navigation";
+
 import MonacoEditor from "@monaco-editor/react";
-import { EditorHeader } from "./EditorHeader";
 import { EditorTabs } from "./EditorTabs";
 import { db } from "@/data/db";
-import React from "react";
 import { useContract } from "@/context/ContractContext";
-import { usePathname } from "next/navigation";
 import { useRefreshFileExplorer } from "../file-explorer/file-explorer";
+import { EditorHeader } from "./editor-header";
+import { EditorProvider } from "@/context/EditorContext";
 
 export const CodeEditor = () => {
   const workspaceName = usePathname();
@@ -41,7 +43,9 @@ export const CodeEditor = () => {
   };
   return (
     <div className="flex-1 flex flex-col">
-      <EditorHeader />
+      <EditorProvider>
+        <EditorHeader />
+      </EditorProvider>
       <div className="flex items-center">
         <EditorTabs />
       </div>
