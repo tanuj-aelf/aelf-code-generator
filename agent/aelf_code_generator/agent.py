@@ -562,7 +562,7 @@ Return ONLY the suggested name, nothing else."""),
             if path:
                 # Special handling for project file to ensure it's always named correctly
                 if path.endswith(".csproj"):
-                    path = f"{contract_name}.csproj"
+                    path = f"src/{contract_name}.csproj"
                 else:
                     path = path.replace("ContractName", contract_name)
                     path = path.replace("contractname", contract_name.lower())
@@ -570,7 +570,7 @@ Return ONLY the suggested name, nothing else."""),
             return content, path
 
         # Initialize all file paths with correct names
-        components["project"]["path"] = f"{contract_name}.csproj"
+        components["project"]["path"] = f"src/{contract_name}.csproj"
         components["contract"]["path"] = f"src/{contract_name}.cs"
         components["state"]["path"] = "src/ContractState.cs"
         components["proto"]["path"] = f"src/Protobuf/contract/{contract_name.lower()}.proto"
@@ -637,14 +637,45 @@ Return ONLY the suggested name, nothing else."""),
             if in_code_block and current_component:
                 current_content.append(line)
 
-        # Create the output structure
+        # Create the output structure with metadata containing additional files
         output = {
-            "contract": components["contract"],
-            "state": components["state"],
-            "proto": components["proto"],
-            "reference": components["reference"],
-            "project": components["project"],
-            "metadata": [],
+            "contract": {
+                "content": components["contract"]["content"],
+                "file_type": components["contract"]["file_type"],
+                "path": components["contract"]["path"]
+            },
+            "state": {
+                "content": components["state"]["content"],
+                "file_type": components["state"]["file_type"],
+                "path": components["state"]["path"]
+            },
+            "proto": {
+                "content": components["proto"]["content"],
+                "file_type": components["proto"]["file_type"],
+                "path": components["proto"]["path"]
+            },
+            "reference": {
+                "content": components["reference"]["content"],
+                "file_type": components["reference"]["file_type"],
+                "path": components["reference"]["path"]
+            },
+            "project": {
+                "content": components["project"]["content"],
+                "file_type": components["project"]["file_type"],
+                "path": components["project"]["path"]
+            },
+            "metadata": [
+                {
+                    "content": file["content"],
+                    "file_type": file["file_type"],
+                    "path": file["path"]
+                }
+                for file in additional_files
+                if not any(
+                    invalid in file["path"].lower()
+                    for invalid in ["<summary>", "</summary>", "<param", "</param>", "<returns>", "</returns>"]
+                )
+            ],
             "analysis": analysis
         }
         
