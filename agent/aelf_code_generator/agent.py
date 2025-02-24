@@ -486,7 +486,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
         in_xml_doc = False
         xml_doc_content = []
         
-        for line in content.split("\n"):
+        for i, line in enumerate(content.split("\n")):
             # Handle XML documentation
             if "///" in line or "/<" in line:
                 in_xml_doc = True
@@ -506,7 +506,8 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             # Handle code block markers
             if "```" in line:
                 if not in_code_block:
-                    # Start of code block - detect language
+                    # Start of code block - detect language and file path
+                    current_file_type = ""
                     if "csharp" in line.lower():
                         current_file_type = "csharp"
                     elif "protobuf" in line.lower() or "proto" in line.lower():
@@ -515,6 +516,56 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         current_file_type = "xml"
                     else:
                         current_file_type = "text"
+                        
+                    # Look for file path in next line
+                    if i + 1 < len(content.split("\n")):
+                        next_line = content.split("\n")[i + 1].strip()
+                        if next_line.startswith("//") or next_line.startswith("<!--"):
+                            file_path = (
+                                next_line.replace("// ", "")
+                                .replace("<!-- ", "")
+                                .replace(" -->", "")
+                                .strip()
+                            )
+                            
+                            # Determine component type from file path
+                            if "ContractState.cs" in file_path or "State.cs" in file_path:
+                                current_component = "state"
+                                components[current_component]["path"] = file_path
+                                components[current_component]["file_type"] = "csharp"
+                            elif ".csproj" in file_path:
+                                current_component = "project"
+                                components[current_component]["path"] = file_path
+                                components[current_component]["file_type"] = "xml"
+                            elif (file_path.endswith(".cs") and 
+                                  not any(x in file_path.lower() for x in ["reference", "test"]) and
+                                  "src" in file_path.lower()):
+                                if not components["contract"]["content"]:
+                                    current_component = "contract"
+                                    components[current_component]["path"] = file_path
+                                    components[current_component]["file_type"] = "csharp"
+                                else:
+                                    current_component = file_path
+                                    additional_files.append({
+                                        "content": "",
+                                        "file_type": "csharp",
+                                        "path": file_path
+                                    })
+                            elif ".proto" in file_path and "contract" in file_path.lower():
+                                current_component = "proto"
+                                components[current_component]["path"] = file_path
+                                components[current_component]["file_type"] = "proto"
+                            elif ("Reference" in file_path and file_path.endswith(".cs")) or "ContractReference" in file_path:
+                                current_component = "reference"
+                                components[current_component]["path"] = file_path
+                                components[current_component]["file_type"] = "csharp"
+                            else:
+                                current_component = file_path
+                                additional_files.append({
+                                    "content": "",
+                                    "file_type": current_file_type,
+                                    "path": file_path
+                                })
                 else:
                     # End of code block
                     if current_component and current_content:
@@ -525,82 +576,23 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         else:
                             # Only store non-empty additional files
                             if code_content and current_file_type:
-                                additional_files.append({
-                                    "content": code_content,
-                                    "file_type": current_file_type,
-                                    "path": current_component if current_component != "additional" else ""
-                                })
+                                # Check if this is a state file that should be moved to components
+                                if ("State.cs" in current_component or "ContractState.cs" in current_component) and not components["state"]["content"]:
+                                    components["state"] = {
+                                        "content": code_content,
+                                        "file_type": current_file_type,
+                                        "path": current_component
+                                    }
+                                else:
+                                    additional_files.append({
+                                        "content": code_content,
+                                        "file_type": current_file_type,
+                                        "path": current_component if current_component != "additional" else ""
+                                    })
                     current_content = []
                     current_component = None
                     current_file_type = ""
                 in_code_block = not in_code_block
-                continue
-            
-            # Handle file path markers
-            if ("// src/" in line or "// " in line or "<!-- " in line):
-                # Skip if it's just a comment about the file path in code
-                if in_code_block and not line.strip().startswith("//") and not line.strip().startswith("<!--"):
-                    current_content.append(line)
-                    continue
-                    
-                file_path = (
-                    line.replace("// ", "")
-                    .replace("<!-- ", "")
-                    .replace(" -->", "")
-                    .strip()
-                )
-                
-                # First check for project file since it has a different comment style
-                if ".csproj" in line:
-                    current_component = "project"
-                    components[current_component]["path"] = file_path
-                # Check for main contract file - should be the one with main contract logic
-                elif (file_path.endswith(".cs") and 
-                      not any(x in file_path.lower() for x in ["reference", "state", "test"]) and
-                      "src" in file_path.lower()):
-                    # Main contract file should be in src directory and not be a reference/state file
-                    if not components["contract"]["content"]:  # Only set if not already set
-                        current_component = "contract"
-                        components[current_component]["path"] = file_path
-                    else:
-                        # If we already have a main contract, this is an additional file
-                        current_component = file_path
-                        additional_files.append({
-                            "content": "",
-                            "file_type": "csharp",
-                            "path": file_path
-                        })
-                # Check for state file
-                elif "State.cs" in file_path or "ContractState.cs" in file_path:
-                    current_component = "state"
-                    components[current_component]["path"] = file_path
-                # Check for proto file in contract directory
-                elif ".proto" in file_path and "contract" in file_path.lower():
-                    current_component = "proto"
-                    components[current_component]["path"] = file_path
-                # Check for reference file
-                elif ("Reference" in file_path and file_path.endswith(".cs")) or "ContractReference" in file_path:
-                    current_component = "reference"
-                    components[current_component]["path"] = file_path
-                # Handle any other files
-                else:
-                    # Only create additional file entry if it's a real file path
-                    if "." in file_path and "/" in file_path:
-                        current_component = file_path
-                        # Set file type based on extension
-                        file_type = ""
-                        if file_path.endswith(".cs"):
-                            file_type = "csharp"
-                        elif file_path.endswith(".proto"):
-                            file_type = "proto"
-                        elif file_path.endswith(".xml") or file_path.endswith(".csproj"):
-                            file_type = "xml"
-                            
-                        additional_files.append({
-                            "content": "",  # Will be filled when code block ends
-                            "file_type": file_type,  # Set based on extension
-                            "path": file_path
-                        })
                 continue
             
             # Collect content if in a code block and have a current component
@@ -616,11 +608,19 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             else:
                 # Only store non-empty additional files
                 if code_content and current_file_type:
-                    additional_files.append({
-                        "content": code_content,
-                        "file_type": current_file_type,
-                        "path": current_component if current_component != "additional" else ""
-                    })
+                    # Check if this is a state file that should be moved to components
+                    if ("State.cs" in current_component or "ContractState.cs" in current_component) and not components["state"]["content"]:
+                        components["state"] = {
+                            "content": code_content,
+                            "file_type": current_file_type,
+                            "path": current_component
+                        }
+                    else:
+                        additional_files.append({
+                            "content": code_content,
+                            "file_type": current_file_type,
+                            "path": current_component if current_component != "additional" else ""
+                        })
         
         # Filter out empty or invalid additional files
         additional_files = [
@@ -631,24 +631,24 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             )
         ]
         
-        # Move main contract files from additional_files to components if needed
-        for file in additional_files[:]:  # Use slice to allow modification during iteration
-            # Check for main contract file if not already set
-            if (not components["contract"]["content"] and 
-                file["path"].endswith(".cs") and 
-                "src" in file["path"].lower() and
-                not any(x in file["path"].lower() for x in ["reference", "state", "test"])):
-                components["contract"] = file
+        # Final check for state files in additional_files
+        for file in additional_files[:]:
+            if (not components["state"]["content"] and 
+                ("State.cs" in file["path"] or "ContractState.cs" in file["path"])):
+                components["state"] = {
+                    "content": file["content"],
+                    "file_type": file["file_type"],
+                    "path": file["path"]
+                }
                 additional_files.remove(file)
-            # Check for state file if not already set
-            elif (not components["state"]["content"] and 
-                  ("State.cs" in file["path"] or "ContractState.cs" in file["path"])):
-                components["state"] = file
-                additional_files.remove(file)
+                break
+        
+        # Move other important files from additional_files to components
+        for file in additional_files[:]:
             # Check for reference file if not already set
-            elif (not components["reference"]["content"] and 
-                  (("Reference" in file["path"] and file["path"].endswith(".cs")) or 
-                   "ContractReference" in file["path"])):
+            if (not components["reference"]["content"] and 
+                (("Reference" in file["path"] and file["path"].endswith(".cs")) or 
+                 "ContractReference" in file["path"])):
                 components["reference"] = file
                 additional_files.remove(file)
             # Check for proto file if not already set
@@ -656,6 +656,11 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                   ".proto" in file["path"] and 
                   "contract" in file["path"].lower()):
                 components["proto"] = file
+                additional_files.remove(file)
+            # Check for state file if not already set
+            elif (not components["state"]["content"] and 
+                  ("State.cs" in file["path"] or "ContractState.cs" in file["path"])):
+                components["state"] = file
                 additional_files.remove(file)
         
         # Ensure we have the main contract file
@@ -672,10 +677,6 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                 components["contract"] = main_candidates[0]
                 additional_files.remove(main_candidates[0])
         
-        # Ensure all components have content
-        if not components["contract"]["content"]:
-            raise ValueError("No main contract implementation found")
-        
         # Create the output structure
         output = {
             "contract": components["contract"],
@@ -686,6 +687,19 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             "metadata": additional_files,
             "analysis": analysis
         }
+        
+        # Debug logging for state file
+        print(f"State file path: {components['state']['path']}")
+        print(f"State file type: {components['state']['file_type']}")
+        print(f"State file content length: {len(components['state']['content']) if components['state']['content'] else 0}")
+        
+        # Validate required components
+        if not components["contract"]["content"]:
+            raise ValueError("No main contract implementation found")
+        if not components["state"]["content"]:
+            raise ValueError("No contract state implementation found")
+        if not components["proto"]["content"]:
+            raise ValueError("No protobuf contract definition found")
         
         # Return command with results
         return Command(
