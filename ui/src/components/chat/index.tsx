@@ -67,9 +67,10 @@ const extractFiles = (data: AgentResponse): FileContent[] => {
 };
 
 const saveWorkspaceData = async (workspaceCount: number, allFiles: FileContent[]) => {
-  await db.workspaces.add({ name: `project-${workspaceCount + 1}`, template: "", dll: "" });
+  const workspace = `project-${workspaceCount + 1}`;
+  await db.workspaces.add({ name: workspace, template: "", dll: "" });
   await db.files.bulkAdd(
-    allFiles.map(({ path, contents }) => ({ path: `/workspace/project/${path}`, contents }))
+    allFiles.map(({ path, contents }) => ({ path: `/workspace/${workspace}/${path}`, contents }))
   );
 };
 
