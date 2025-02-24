@@ -112,6 +112,38 @@ Format each file in a separate code block with proper file path comment:
 
 Ensure all files follow AELF conventions and best practices."""
 
+VALIDATION_PROMPT = """You are an expert AELF smart contract validator. Your task is to validate the generated smart contract code and identify potential issues before compilation.
+
+Focus on these critical areas:
+
+1. Protobuf Validation:
+- Check for required AELF imports (aelf/options.proto)
+- Verify correct namespace declarations
+- Validate event message definitions
+- Check service method signatures
+- Verify proper use of repeated fields in messages
+
+2. State Management:
+- Verify state class naming consistency
+- Check proper use of AELF state types
+- Validate collection initialization patterns
+- Verify state access patterns
+
+3. Contract Implementation:
+- Verify base class inheritance
+- Check method implementations against protobuf definitions
+- Validate event emission patterns
+- Verify access control implementation
+- Check pause mechanism implementation
+
+4. Security Checks:
+- Verify input validation
+- Check state modification guards
+- Validate owner-only functions
+- Check for proper event emissions
+
+Provide specific fixes for any issues found."""
+
 async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
     try:
@@ -712,6 +744,115 @@ Return ONLY the suggested name, nothing else."""),
             }
         )
 
+async def validate_contract(state: AgentState) -> Command[Literal["generate", "__end__"]]:
+    """Validate the generated contract code and suggest fixes."""
+    try:
+        # Get the generated code from state
+        output = state["_internal"]["output"]
+        contract_code = output["contract"]["content"]
+        state_code = output["state"]["content"]
+        proto_code = output["proto"]["content"]
+        
+        # Get model for validation
+        model = get_model(state)
+        
+        # Prepare validation messages
+        messages = [
+            SystemMessage(content=VALIDATION_PROMPT),
+            HumanMessage(content=f"""
+Please validate the following AELF smart contract code:
+
+Proto File:
+{proto_code}
+
+State Class:
+{state_code}
+
+Contract Implementation:
+{contract_code}
+
+Identify any issues that would prevent successful compilation or cause runtime issues.""")
+        ]
+        
+        # Get validation response
+        response = await model.ainvoke(messages)
+        validation_result = response.content.strip()
+        
+        if "No issues found" in validation_result:
+            # If no issues, continue to generation
+            return Command(
+                goto="generate",
+                update=state["_internal"]
+            )
+        
+        # If issues found, get fixes
+        fix_messages = [
+            SystemMessage(content="You are an expert AELF smart contract developer. Based on the validation issues found, provide specific code fixes."),
+            HumanMessage(content=f"""
+Validation found the following issues:
+{validation_result}
+
+Please provide specific code fixes for each file:""")
+        ]
+        
+        fix_response = await model.ainvoke(fix_messages)
+        fixes = fix_response.content.strip()
+        
+        # Apply fixes to the code
+        updated_output = {
+            "contract": {"content": "", "file_type": "csharp", "path": output["contract"]["path"]},
+            "state": {"content": "", "file_type": "csharp", "path": output["state"]["path"]},
+            "proto": {"content": "", "file_type": "proto", "path": output["proto"]["path"]},
+            "reference": output["reference"],
+            "project": output["project"],
+            "metadata": output["metadata"],
+            "analysis": output["analysis"]
+        }
+        
+        # Parse and apply fixes
+        current_file = None
+        current_content = []
+        for line in fixes.split("\n"):
+            if line.startswith("```"):
+                if "proto" in line:
+                    current_file = "proto"
+                elif "csharp" in line and "State" in line:
+                    current_file = "state"
+                elif "csharp" in line:
+                    current_file = "contract"
+                elif current_file and current_content:
+                    updated_output[current_file]["content"] = "\n".join(current_content)
+                    current_content = []
+                    current_file = None
+            elif current_file:
+                current_content.append(line)
+        
+        # Return command to regenerate with fixes
+        return Command(
+            goto="generate",
+            update={
+                "_internal": {
+                    **state["_internal"],
+                    "output": updated_output
+                }
+            }
+        )
+        
+    except Exception as e:
+        error_msg = f"Error in validation: {str(e)}"
+        return Command(
+            goto="__end__",
+            update={
+                "_internal": {
+                    **state["_internal"],
+                    "output": {
+                        **state["_internal"]["output"],
+                        "analysis": error_msg
+                    }
+                }
+            }
+        )
+
 def create_agent():
     """Create the agent workflow."""
     workflow = StateGraph(AgentState)
@@ -720,14 +861,20 @@ def create_agent():
     workflow.add_node("analyze", analyze_requirements)
     workflow.add_node("analyze_codebase", analyze_codebase)
     workflow.add_node("generate", generate_contract)
+    workflow.add_node("validate", validate_contract)
     
-    # Set entry point and connect nodes
+    # Set entry point and connect nodes in a linear flow
     workflow.set_entry_point("analyze")
+    
+    # Main happy path - reordered to put validation after generation
     workflow.add_edge("analyze", "analyze_codebase")
-    workflow.add_edge("analyze", END)  # In case of analysis error
     workflow.add_edge("analyze_codebase", "generate")
-    workflow.add_edge("analyze_codebase", END)  # In case of codebase analysis error
-    workflow.add_edge("generate", END)
+    workflow.add_edge("generate", "validate")
+    workflow.add_edge("validate", END)
+    
+    # Error handling paths
+    workflow.add_edge("analyze", END)  # In case of analysis failure
+    workflow.add_edge("validate", "generate")  # Loop back to generate if validation finds issues
     
     # Compile workflow
     return workflow.compile()

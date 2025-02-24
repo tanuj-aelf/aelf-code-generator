@@ -16,6 +16,15 @@ def get_model(state: AgentState) -> BaseChatModel:
 
     print(f"Using model: {model}")
 
+    if model == "azure_openai":
+        from langchain_openai import AzureChatOpenAI
+        return AzureChatOpenAI(
+            azure_deployment="dapp-factory-gpt-4o",
+            azure_endpoint="https://zhife-m5vtfkd0-westus.services.ai.azure.com/",
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_version="2024-02-15-preview",
+            temperature=0.7
+        )
     if model == "openai":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(temperature=0, model="gpt-4")
