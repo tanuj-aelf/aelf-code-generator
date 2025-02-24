@@ -474,35 +474,115 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             "reference": dict(empty_code_file),
             "project": dict(empty_code_file)
         }
+        
         additional_files = []  # List to store additional files
         
+        # Extract contract name from file paths or content
+        contract_name = None
+        lines = content.split("\n")
+        
+        # First try to find contract name from class definition
+        for line in lines:
+            if "public class" in line and "Contract" in line and ":" in line:
+                parts = line.split("public class")[1].strip().split(":")
+                potential_name = parts[0].strip().replace("Contract", "")
+                if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
+                    contract_name = potential_name
+                    break
+        
+        # If not found, try file paths
+        if not contract_name:
+            for line in lines:
+                if line.strip().startswith("//") and ".cs" in line and not any(x in line.lower() for x in ["state", "reference", "test"]):
+                    file_path = line.replace("// ", "").strip()
+                    if "/" in file_path:
+                        potential_name = file_path.split("/")[-1].replace(".cs", "")
+                        if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
+                            contract_name = potential_name
+                            break
+        
+        # If still not found, try to extract from analysis
+        if not contract_name and analysis:
+            analysis_lower = analysis.lower()
+            
+            # First try to find explicit contract name
+            if "contract name:" in analysis_lower:
+                contract_line = [l for l in analysis.split("\n") if "contract name:" in l.lower()][0]
+                potential_name = contract_line.split(":")[-1].strip()
+                if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
+                    contract_name = potential_name
+            
+            # If still no name, ask the base model to suggest one based on the analysis
+            if not contract_name:
+                # Get model with state
+                model = get_model(state)
+                
+                # Generate contract name based on analysis
+                messages = [
+                    SystemMessage(content="""You are an expert at naming AELF smart contracts. Based on the contract analysis provided, suggest a clear and descriptive contract name following these rules:
+1. The name should reflect the contract's main purpose
+2. Use PascalCase format
+3. End with a relevant suffix (e.g., Contract, Manager, System)
+4. Keep it concise but descriptive
+5. Avoid generic terms like "Smart" or "Contract" alone
+6. Do not include "AELF" or platform-specific prefixes
+7. Exclude words like "State", "Reference", or "Test"
+
+Return ONLY the suggested name, nothing else."""),
+                    HumanMessage(content=f"Contract Analysis:\n{analysis}\n\nSuggest an appropriate name for this contract:")
+                ]
+                
+                try:
+                    response = await model.ainvoke(messages)
+                    suggested_name = response.content.strip()
+                    if suggested_name and not any(x in suggested_name.lower() for x in ["state", "reference", "test"]):
+                        contract_name = suggested_name
+                except Exception as e:
+                    print(f"Error getting contract name suggestion: {str(e)}")
+        
+        if not contract_name:
+            # If we still don't have a name, use a simple generic name
+            contract_name = "AElfContract"
+            
+        # Debug log for contract name
+        print(f"\nContract name determined: {contract_name}")
+            
+        # Store contract name in components for consistent usage
+        for component in components.values():
+            component["contract_name"] = contract_name
+            
+        # Function to update paths and content with contract name
+        def update_contract_name_references(content, path):
+            """Helper function to consistently update contract name references."""
+            if content:
+                content = content.replace("ContractName", contract_name)
+                content = content.replace("contractname", contract_name.lower())
+                content = content.replace("namespace ContractName", f"namespace {contract_name}")
+                
+            if path:
+                # Special handling for project file to ensure it's always named correctly
+                if path.endswith(".csproj"):
+                    path = f"{contract_name}.csproj"
+                else:
+                    path = path.replace("ContractName", contract_name)
+                    path = path.replace("contractname", contract_name.lower())
+                    
+            return content, path
+
+        # Initialize all file paths with correct names
+        components["project"]["path"] = f"{contract_name}.csproj"
+        components["contract"]["path"] = f"src/{contract_name}.cs"
+        components["state"]["path"] = "src/ContractState.cs"
+        components["proto"]["path"] = f"src/Protobuf/contract/{contract_name.lower()}.proto"
+        components["reference"]["path"] = "src/ContractReference.cs"
+
         # Parse code blocks
         current_component = None
         current_content = []
         in_code_block = False
         current_file_type = ""
         
-        # Track if we're inside XML documentation
-        in_xml_doc = False
-        xml_doc_content = []
-        
         for i, line in enumerate(content.split("\n")):
-            # Handle XML documentation
-            if "///" in line or "/<" in line:
-                in_xml_doc = True
-                xml_doc_content.append(line)
-                continue
-            elif in_xml_doc and (">" in line or line.strip().endswith("/")):
-                in_xml_doc = False
-                xml_doc_content.append(line)
-                if current_content:
-                    current_content.extend(xml_doc_content)
-                xml_doc_content = []
-                continue
-            elif in_xml_doc:
-                xml_doc_content.append(line)
-                continue
-                
             # Handle code block markers
             if "```" in line:
                 if not in_code_block:
@@ -514,9 +594,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                         current_file_type = "proto"
                     elif "xml" in line.lower():
                         current_file_type = "xml"
-                    else:
-                        current_file_type = "text"
-                        
+                    
                     # Look for file path in next line
                     if i + 1 < len(content.split("\n")):
                         next_line = content.split("\n")[i + 1].strip()
@@ -528,155 +606,37 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
                                 .strip()
                             )
                             
-                            # Determine component type from file path
-                            if "ContractState.cs" in file_path or "State.cs" in file_path:
+                            # Map file path to component type
+                            if "ContractState.cs" in file_path:
                                 current_component = "state"
-                                components[current_component]["path"] = file_path
-                                components[current_component]["file_type"] = "csharp"
                             elif ".csproj" in file_path:
                                 current_component = "project"
-                                components[current_component]["path"] = file_path
-                                components[current_component]["file_type"] = "xml"
-                            elif (file_path.endswith(".cs") and 
-                                  not any(x in file_path.lower() for x in ["reference", "test"]) and
-                                  "src" in file_path.lower()):
-                                if not components["contract"]["content"]:
-                                    current_component = "contract"
-                                    components[current_component]["path"] = file_path
-                                    components[current_component]["file_type"] = "csharp"
-                                else:
-                                    current_component = file_path
-                                    additional_files.append({
-                                        "content": "",
-                                        "file_type": "csharp",
-                                        "path": file_path
-                                    })
-                            elif ".proto" in file_path and "contract" in file_path.lower():
-                                current_component = "proto"
-                                components[current_component]["path"] = file_path
-                                components[current_component]["file_type"] = "proto"
-                            elif ("Reference" in file_path and file_path.endswith(".cs")) or "ContractReference" in file_path:
+                            elif file_path.endswith(".cs") and "Reference" in file_path:
                                 current_component = "reference"
-                                components[current_component]["path"] = file_path
-                                components[current_component]["file_type"] = "csharp"
-                            else:
-                                current_component = file_path
-                                additional_files.append({
-                                    "content": "",
-                                    "file_type": current_file_type,
-                                    "path": file_path
-                                })
+                            elif ".proto" in file_path:
+                                current_component = "proto"
+                            elif file_path.endswith(".cs"):
+                                current_component = "contract"
+                            
+                            if current_component:
+                                components[current_component]["file_type"] = current_file_type
                 else:
                     # End of code block
                     if current_component and current_content:
                         code_content = "\n".join(current_content).strip()
                         if current_component in components:
+                            # Update content with contract name
+                            code_content, _ = update_contract_name_references(code_content, "")
                             components[current_component]["content"] = code_content
-                            components[current_component]["file_type"] = current_file_type
-                        else:
-                            # Only store non-empty additional files
-                            if code_content and current_file_type:
-                                # Check if this is a state file that should be moved to components
-                                if ("State.cs" in current_component or "ContractState.cs" in current_component) and not components["state"]["content"]:
-                                    components["state"] = {
-                                        "content": code_content,
-                                        "file_type": current_file_type,
-                                        "path": current_component
-                                    }
-                                else:
-                                    additional_files.append({
-                                        "content": code_content,
-                                        "file_type": current_file_type,
-                                        "path": current_component if current_component != "additional" else ""
-                                    })
                     current_content = []
                     current_component = None
-                    current_file_type = ""
                 in_code_block = not in_code_block
                 continue
             
-            # Collect content if in a code block and have a current component
+            # Collect content if in a code block
             if in_code_block and current_component:
                 current_content.append(line)
-        
-        # Add last component if any
-        if current_component and current_content:
-            code_content = "\n".join(current_content).strip()
-            if current_component in components:
-                components[current_component]["content"] = code_content
-                components[current_component]["file_type"] = current_file_type
-            else:
-                # Only store non-empty additional files
-                if code_content and current_file_type:
-                    # Check if this is a state file that should be moved to components
-                    if ("State.cs" in current_component or "ContractState.cs" in current_component) and not components["state"]["content"]:
-                        components["state"] = {
-                            "content": code_content,
-                            "file_type": current_file_type,
-                            "path": current_component
-                        }
-                    else:
-                        additional_files.append({
-                            "content": code_content,
-                            "file_type": current_file_type,
-                            "path": current_component if current_component != "additional" else ""
-                        })
-        
-        # Filter out empty or invalid additional files
-        additional_files = [
-            f for f in additional_files 
-            if f["content"] and f["file_type"] and not any(
-                invalid in f["path"].lower() 
-                for invalid in ["<summary>", "</summary>", "<param", "</param>", "<returns>", "</returns>"]
-            )
-        ]
-        
-        # Final check for state files in additional_files
-        for file in additional_files[:]:
-            if (not components["state"]["content"] and 
-                ("State.cs" in file["path"] or "ContractState.cs" in file["path"])):
-                components["state"] = {
-                    "content": file["content"],
-                    "file_type": file["file_type"],
-                    "path": file["path"]
-                }
-                additional_files.remove(file)
-                break
-        
-        # Move other important files from additional_files to components
-        for file in additional_files[:]:
-            # Check for reference file if not already set
-            if (not components["reference"]["content"] and 
-                (("Reference" in file["path"] and file["path"].endswith(".cs")) or 
-                 "ContractReference" in file["path"])):
-                components["reference"] = file
-                additional_files.remove(file)
-            # Check for proto file if not already set
-            elif (not components["proto"]["content"] and 
-                  ".proto" in file["path"] and 
-                  "contract" in file["path"].lower()):
-                components["proto"] = file
-                additional_files.remove(file)
-            # Check for state file if not already set
-            elif (not components["state"]["content"] and 
-                  ("State.cs" in file["path"] or "ContractState.cs" in file["path"])):
-                components["state"] = file
-                additional_files.remove(file)
-        
-        # Ensure we have the main contract file
-        if not components["contract"]["content"]:
-            # Try to find the most likely main contract file from additional_files
-            main_candidates = [
-                f for f in additional_files 
-                if f["file_type"] == "csharp" and 
-                "src" in f["path"].lower() and
-                not any(x in f["path"].lower() for x in ["reference", "state", "test"])
-            ]
-            if main_candidates:
-                # Use the first candidate as main contract
-                components["contract"] = main_candidates[0]
-                additional_files.remove(main_candidates[0])
-        
+
         # Create the output structure
         output = {
             "contract": components["contract"],
@@ -684,22 +644,9 @@ async def generate_contract(state: AgentState) -> Command[Literal["__end__"]]:
             "proto": components["proto"],
             "reference": components["reference"],
             "project": components["project"],
-            "metadata": additional_files,
+            "metadata": [],
             "analysis": analysis
         }
-        
-        # Debug logging for state file
-        print(f"State file path: {components['state']['path']}")
-        print(f"State file type: {components['state']['file_type']}")
-        print(f"State file content length: {len(components['state']['content']) if components['state']['content'] else 0}")
-        
-        # Validate required components
-        if not components["contract"]["content"]:
-            raise ValueError("No main contract implementation found")
-        if not components["state"]["content"]:
-            raise ValueError("No contract state implementation found")
-        if not components["proto"]["content"]:
-            raise ValueError("No protobuf contract definition found")
         
         # Return command with results
         return Command(
