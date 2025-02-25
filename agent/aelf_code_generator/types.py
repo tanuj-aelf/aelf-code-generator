@@ -2,7 +2,7 @@
 This module defines the state types for the AELF code generator agent.
 """
 
-from typing import TypedDict, List, Optional, NotRequired
+from typing import TypedDict, List, Optional, NotRequired, Dict, Literal
 
 class CodebaseInsight(TypedDict, total=False):
     """
@@ -38,14 +38,45 @@ class InternalState(TypedDict, total=False):
     analysis: str
     codebase_insights: CodebaseInsight
     output: ContractOutput
+    validation_count: int
+    validation_result: str
+    fixes: str
+    validation_complete: bool
 
 class AgentState(TypedDict, total=False):
     """State type for the agent workflow."""
     input: str  # Original dApp description
-    _internal: NotRequired[InternalState]  # Internal state management (not shown in UI)
+    generate: NotRequired[Dict[Literal["_internal"], InternalState]]  # Internal state management wrapped in generate
 
 def get_default_state() -> AgentState:
     """Initialize default state."""
+    empty_code_file = {
+        "content": "",
+        "file_type": "",
+        "path": ""
+    }
+    
     return {
-        "input": ""
+        "input": "",
+        "generate": {
+            "_internal": {
+                "analysis": "",
+                "codebase_insights": {
+                    "project_structure": "",
+                    "coding_patterns": "",
+                    "relevant_samples": [],
+                    "implementation_guidelines": ""
+                },
+                "output": {
+                    "contract": empty_code_file,
+                    "state": empty_code_file,
+                    "proto": empty_code_file,
+                    "reference": empty_code_file,
+                    "project": empty_code_file,
+                    "metadata": [],
+                    "analysis": ""
+                },
+                "validation_count": 0
+            }
+        }
     } 

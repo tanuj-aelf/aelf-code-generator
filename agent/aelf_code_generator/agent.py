@@ -3,6 +3,7 @@ This module defines the main agent workflow for AELF smart contract code generat
 """
 
 import os
+import traceback
 from typing import Dict, List, Any, Annotated, Literal
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -15,6 +16,9 @@ from aelf_code_generator.types import AgentState, ContractOutput, CodebaseInsigh
 
 # Define the internal state type with annotation for multiple updates
 InternalStateType = Annotated[Dict, "internal"]
+
+# Note: When using gemini-2.0-flash, system messages are converted to human messages
+# This is handled by the ChatGoogleGenerativeAI class with convert_system_message_to_human=True
 
 ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Your task is to analyze the dApp description and provide a detailed analysis.
 
@@ -162,24 +166,13 @@ Provide specific issues found and suggest fixes. If no issues are found, explici
 async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
     try:
+        # Debug log to see the state structure
+        print(f"DEBUG - analyze_requirements input state: {state}")
+        
         # Initialize internal state if not present
-        if "_internal" not in state:
-            state["_internal"] = {
-                "analysis": "",
-                "codebase_insights": {
-                    "project_structure": "",
-                    "coding_patterns": "",
-                    "relevant_samples": [],
-                    "implementation_guidelines": ""
-                },
-                "output": {
-                    "contract": "",
-                    "state": "",
-                    "proto": "",
-                    "analysis": ""
-                },
-                "validation_count": 0  # Initialize validation counter
-            }
+        if "generate" not in state or "_internal" not in state["generate"]:
+            print("DEBUG - generate._internal not found in state, initializing it")
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
             
         # Get model with state
         model = get_model(state)
@@ -196,65 +189,89 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
         if not analysis:
             raise ValueError("Analysis generation failed - empty response")
             
-        # Return command to move to next state
-        internal_state = {
-            "analysis": analysis,
-            "codebase_insights": state["_internal"]["codebase_insights"],
-            "output": {
-                "contract": "",
-                "state": "",
-                "proto": "",
-                "analysis": analysis
-            }
+        # Create internal state with analysis
+        internal_state = state["generate"]["_internal"]
+        internal_state["analysis"] = analysis
+        internal_state["output"] = {
+            **internal_state.get("output", {}),
+            "analysis": analysis
         }
         
+        # Debug log for the updated state
+        print(f"DEBUG - analyze_requirements updated internal state: {internal_state}")
+        
+        # Return command to move to next state
         return Command(
             goto="analyze_codebase",
             update={
-                "_internal": internal_state
+                "generate": {
+                    "_internal": internal_state
+                }
             }
         )
         
     except Exception as e:
-        error_msg = f"Error analyzing requirements: {str(e)}"
-        error_state = {
-            "analysis": error_msg,
-            "codebase_insights": {
-                "project_structure": "",
-                "coding_patterns": "",
-                "relevant_samples": [],
-                "implementation_guidelines": ""
-            },
-            "output": {
-                "contract": "",
-                "state": "",
-                "proto": "",
-                "analysis": error_msg
-            }
+        # Log the error
+        print(f"DEBUG - Error in analyze_requirements: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
+        
+        # Initialize internal state if it doesn't exist
+        if "generate" not in state or "_internal" not in state["generate"]:
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
+        
+        # Create error state
+        error_state = state["generate"]["_internal"]
+        error_state["analysis"] = f"Error analyzing requirements: {str(e)}"
+        error_state["output"] = {
+            **error_state.get("output", {}),
+            "analysis": f"Error analyzing requirements: {str(e)}"
         }
+        
+        # Debug log for error state
+        print(f"DEBUG - Error state: {error_state}")
+        
+        # Return error state
         return Command(
             goto="__end__",
             update={
-                "_internal": error_state
+                "generate": {
+                    "_internal": error_state
+                }
             }
         )
 
-async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__end__"]]:
+async def analyze_codebase(state: AgentState) -> Command[Literal["generate_code", "__end__"]]:
     """Analyze AELF sample codebases to gather implementation insights."""
     try:
-        # First try to determine the type of contract from analysis
-        analysis = state["_internal"]["analysis"]
-        contract_type = "smart contract"  # default
+        # Debug log to see the state structure
+        print(f"DEBUG - analyze_codebase input state: {state}")
+        
+        # Initialize internal state if not present
+        if "generate" not in state or "_internal" not in state["generate"]:
+            print("DEBUG - generate._internal not found in state, initializing it")
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
+            
+        # Get analysis from internal state
+        internal_state = state["generate"]["_internal"]
+        analysis = internal_state.get("analysis", "")
+        
+        if not analysis:
+            print("DEBUG - No analysis found in state")
+            analysis = "No analysis provided. Proceeding with generic AELF contract implementation."
+            internal_state["analysis"] = analysis
         
         # Identify relevant sample based on contract type
+        contract_type = "smart contract"  # default
         relevant_samples = []
+        
+        # Determine contract type from analysis
         if "NFT" in analysis or "token" in analysis.lower():
             contract_type = "NFT contract"
             relevant_samples = ["nft"]
         elif "DAO" in analysis.lower():
             contract_type = "DAO contract"
             relevant_samples = ["simple-dao"]
-        elif "game" in analysis.lower():
+        elif "game" in analysis.lower() or "lottery" in analysis.lower():
             contract_type = "game contract"
             relevant_samples = ["lottery-game", "tic-tac-toe"]
         elif "todo" in analysis.lower():
@@ -284,17 +301,7 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate", "__
         
         # Generate codebase insights with improved prompt
         messages = [
-            SystemMessage(content="""You are an expert AELF smart contract developer. Based on the contract requirements and AELF sample contracts, provide implementation insights and patterns.
-Focus on practical, concrete patterns that can be directly applied to smart contract development.
-For each pattern you identify, include a brief explanation of why it's important and how it should be used.
-
-Your response should be structured in these sections:
-1. Project Structure - How the contract files should be organized
-2. Coding Patterns - Common patterns and practices to use
-3. Implementation Guidelines - Specific guidance for this contract type
-4. Relevant Samples - Which sample contracts to reference
-
-Be specific and detailed in your guidance."""),
+            SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
             HumanMessage(content=f"""
 Based on the following contract requirements and type, provide implementation insights and patterns from AELF sample contracts.
 
@@ -429,29 +436,40 @@ Your insights will guide the code generation process.""")
                 "relevant_samples": relevant_samples,
                 "implementation_guidelines": implementation_guidelines
             }
+            
+            # Update internal state with insights
+            internal_state["codebase_insights"] = insights_dict
+            
+            # Debug log for the updated state
+            print(f"DEBUG - analyze_codebase updated internal state: {internal_state}")
+            
+            # Return command to move to next state
+            return Command(
+                goto="generate_code",
+                update={
+                    "generate": {
+                        "_internal": internal_state
+                    }
+                }
+            )
                 
         except Exception as e:
-            print(f"Error analyzing requirements: {str(e)}")
+            print(f"DEBUG - Error analyzing codebase insights: {str(e)}")
             raise
             
-        # Create internal state dictionary
-        internal_state = dict(state["_internal"])
-        internal_state["codebase_insights"] = insights_dict
-            
-        # Return command to move to next state
-        return Command(
-            goto="generate",
-            update={
-                "_internal": internal_state
-            }
-        )
-        
     except Exception as e:
-        error_msg = f"Error analyzing codebase: {str(e)}"
-        print(f"Codebase analysis error: {error_msg}")
+        # Log the error
+        print(f"DEBUG - Error in analyze_codebase: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
         
-        # Create error state dictionary
-        error_state = dict(state["_internal"])
+        # Initialize internal state if it doesn't exist
+        if "generate" not in state or "_internal" not in state["generate"]:
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
+        
+        # Create error state with default insights
+        error_state = state["generate"]["_internal"]
+        error_msg = f"Error analyzing codebase: {str(e)}"
+        
         error_state["codebase_insights"] = {
             "project_structure": """Standard AELF project structure:
 1. Contract class inheriting from AElfContract
@@ -474,35 +492,65 @@ Your insights will guide the code generation process.""")
 7. Add XML documentation for all public members"""
         }
         
+        # Debug log for error state
+        print(f"DEBUG - Error state: {error_state}")
+        
+        # Return command to continue to generate even if codebase analysis fails
         return Command(
-            goto="generate",  # Continue to generate even if codebase analysis fails
+            goto="generate_code",
             update={
-                "_internal": error_state
+                "generate": {
+                    "_internal": error_state
+                }
             }
         )
 
-async def generate_contract(state: AgentState) -> Command[Literal["validate", "__end__"]]:
+async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
     """Generate smart contract code based on analysis and codebase insights."""
     try:
-        # Get analysis and insights
-        internal = state["_internal"]
-        analysis = internal.get("analysis") or internal["output"]["analysis"]  # Try both locations
-        insights = internal["codebase_insights"]
-        fixes = internal.get("fixes", "")  # Get fixes if available
+        print("DEBUG - Starting generate_contract function")
+        # Debug log to see the state structure
+        print(f"DEBUG - generate_contract input state: {state}")
         
-        if not analysis or not insights["implementation_guidelines"]:
-            raise ValueError("Missing analysis or codebase insights")
+        # Initialize internal state if not present
+        if "generate" not in state or "_internal" not in state["generate"]:
+            print("DEBUG - generate._internal not found in state, initializing it")
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
             
+        # Get analysis and insights from internal state
+        internal_state = state["generate"]["_internal"]
+        analysis = internal_state.get("analysis", "")
+        insights = internal_state.get("codebase_insights", {})
+        fixes = internal_state.get("fixes", "")
+        validation_count = internal_state.get("validation_count", 0)
+        
+        print(f"DEBUG - generate_contract: Current validation count: {validation_count}")
+        
+        if not analysis:
+            print("DEBUG - No analysis found in state")
+            analysis = "No analysis provided. Proceeding with generic AELF contract implementation."
+            internal_state["analysis"] = analysis
+            
+        if not insights:
+            print("DEBUG - No insights found in state")
+            insights = {
+                "project_structure": "Standard AELF project structure",
+                "coding_patterns": "Common AELF patterns",
+                "relevant_samples": ["hello-world"],
+                "implementation_guidelines": "Follow AELF best practices"
+            }
+            internal_state["codebase_insights"] = insights
+        
         # Get model with state
         model = get_model(state)
         
         # Generate code based on analysis and insights
         messages = [
             SystemMessage(content=CODE_GENERATION_PROMPT.format(
-                implementation_guidelines=insights["implementation_guidelines"],
-                coding_patterns=insights["coding_patterns"],
-                project_structure=insights["project_structure"],
-                relevant_samples="\n".join(insights["relevant_samples"])
+                implementation_guidelines=insights.get("implementation_guidelines", ""),
+                coding_patterns=insights.get("coding_patterns", ""),
+                project_structure=insights.get("project_structure", ""),
+                relevant_samples="\n".join(insights.get("relevant_samples", []))
             )),
             HumanMessage(content=f"""
 Analysis:
@@ -511,7 +559,9 @@ Analysis:
 Previous Validation Issues and Fixes:
 {fixes}
 
-Please generate the complete smart contract implementation following AELF's project structure.""")
+Please generate the complete smart contract implementation following AELF's project structure.
+{f"This is iteration {validation_count + 1} of the code generation. Please incorporate the fixes suggested in the previous validation." if validation_count > 0 else ""}
+""")
         ]
         
         try:
@@ -522,7 +572,7 @@ Please generate the complete smart contract implementation following AELF's proj
             if not content:
                 raise ValueError("Code generation failed - empty response")
         except TimeoutError:
-            print("Code generation timed out, using partial response if available")
+            print("DEBUG - Code generation timed out, using partial response if available")
             content = getattr(response, 'content', '') or ""
             if not content:
                 raise ValueError("Code generation timed out and no partial response available")
@@ -563,51 +613,12 @@ Please generate the complete smart contract implementation following AELF's proj
                             contract_name = potential_name
                             break
         
-        # If still not found, try to extract from analysis
-        if not contract_name and analysis:
-            analysis_lower = analysis.lower()
-            
-            # First try to find explicit contract name
-            if "contract name:" in analysis_lower:
-                contract_line = [l for l in analysis.split("\n") if "contract name:" in l.lower()][0]
-                potential_name = contract_line.split(":")[-1].strip()
-                if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
-                    contract_name = potential_name
-            
-            # If still no name, ask the base model to suggest one based on the analysis
-            if not contract_name:
-                # Get model with state
-                model = get_model(state)
-                
-                # Generate contract name based on analysis
-                messages = [
-                    SystemMessage(content="""You are an expert at naming AELF smart contracts. Based on the contract analysis provided, suggest a clear and descriptive contract name following these rules:
-1. The name should reflect the contract's main purpose
-2. Use PascalCase format
-3. End with a relevant suffix (e.g., Contract, Manager, System)
-4. Keep it concise but descriptive
-5. Avoid generic terms like "Smart" or "Contract" alone
-6. Do not include "AELF" or platform-specific prefixes
-7. Exclude words like "State", "Reference", or "Test"
-
-Return ONLY the suggested name, nothing else."""),
-                    HumanMessage(content=f"Contract Analysis:\n{analysis}\n\nSuggest an appropriate name for this contract:")
-                ]
-                
-                try:
-                    response = await model.ainvoke(messages)
-                    suggested_name = response.content.strip()
-                    if suggested_name and not any(x in suggested_name.lower() for x in ["state", "reference", "test"]):
-                        contract_name = suggested_name
-                except Exception as e:
-                    print(f"Error getting contract name suggestion: {str(e)}")
-        
+        # If still not found, use a default name
         if not contract_name:
-            # If we still don't have a name, use a simple generic name
-            contract_name = "ETF"
+            contract_name = "AELFContract"
             
         # Debug log for contract name
-        print(f"\nContract name determined: {contract_name}")
+        print(f"DEBUG - Contract name determined: {contract_name}")
             
         # Store contract name in components for consistent usage
         for component in components.values():
@@ -699,253 +710,429 @@ Return ONLY the suggested name, nothing else."""),
             if in_code_block and current_component:
                 current_content.append(line)
 
-        # Move state content from contract to state if needed
-        if components["state"]["content"] == "" and "State.cs" in components["contract"]["content"]:
-            # Extract state content from contract
-            state_content = ""
-            lines = components["contract"]["content"].split("\n")
-            state_start = -1
-            state_end = -1
-            
-            for i, line in enumerate(lines):
-                if "public class" in line and "State" in line:
-                    state_start = i
-                    # Find matching closing brace
-                    brace_count = 1
-                    for j in range(i + 1, len(lines)):
-                        if "{" in lines[j]:
-                            brace_count += 1
-                        if "}" in lines[j]:
-                            brace_count -= 1
-                        if brace_count == 0:
-                            state_end = j + 1
-                            break
-                    break
-            
-            if state_start != -1 and state_end != -1:
-                state_content = "\n".join(lines[state_start-1:state_end])  # Include namespace
-                components["state"]["content"] = state_content
-                # Remove state content from contract
-                components["contract"]["content"] = "\n".join(lines[:state_start-1] + lines[state_end:])
-
         # Create the output structure with metadata containing additional files
         output = {
-            "contract": {
-                "content": components["contract"]["content"],
-                "file_type": components["contract"]["file_type"],
-                "path": components["contract"]["path"]
-            },
-            "state": {
-                "content": components["state"]["content"],
-                "file_type": components["state"]["file_type"],
-                "path": components["state"]["path"]
-            },
-            "proto": {
-                "content": components["proto"]["content"],
-                "file_type": components["proto"]["file_type"],
-                "path": components["proto"]["path"]
-            },
-            "reference": {
-                "content": components["reference"]["content"],
-                "file_type": components["reference"]["file_type"],
-                "path": components["reference"]["path"]
-            },
-            "project": {
-                "content": components["project"]["content"],
-                "file_type": components["project"]["file_type"],
-                "path": components["project"]["path"]
-            },
-            "metadata": [
-                {
-                    "content": file["content"],
-                    "file_type": file["file_type"],
-                    "path": file["path"]
-                }
-                for file in additional_files
-                if not any(
-                    invalid in file["path"].lower()
-                    for invalid in ["<summary>", "</summary>", "<param", "</param>", "<returns>", "</returns>"]
-                )
-            ],
+            "contract": components["contract"],
+            "state": components["state"],
+            "proto": components["proto"],
+            "reference": components["reference"],
+            "project": components["project"],
+            "metadata": additional_files,
             "analysis": analysis  # Preserve analysis in output
         }
         
-        # Create internal state dictionary
-        internal_state = dict(state["_internal"])
-        internal_state.update({
-            "analysis": analysis,  # Preserve analysis at top level
-            "output": output,
-            "validation_count": internal.get("validation_count", 0)  # Preserve validation count
-        })
+        # Update internal state with output
+        internal_state["output"] = output
+        
+        # Debug log for the updated state
+        print(f"DEBUG - generate_contract updated output: {output}")
         
         # Return command to move to validation
+        print("DEBUG - generate_contract: Moving to validate step")
         return Command(
             goto="validate",
             update={
-                "_internal": internal_state
+                "generate": {
+                    "_internal": internal_state
+                }
             }
         )
         
     except Exception as e:
+        # Log the error
+        print(f"DEBUG - Error in generate_contract: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
+        
+        # Initialize internal state if it doesn't exist
+        if "generate" not in state or "_internal" not in state["generate"]:
+            state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
+        
+        # Create error state
+        error_state = state["generate"]["_internal"]
         error_msg = f"Error generating contract: {str(e)}"
-        print(f"Generation error: {error_msg}")
         
-        # Create error state dictionary
-        error_state = dict(state["_internal"])
-        error_state.update({
-            "analysis": state["_internal"].get("analysis") or state["_internal"]["output"]["analysis"],  # Preserve analysis
-            "output": {
-                "contract": empty_code_file,
-                "state": empty_code_file,
-                "proto": empty_code_file,
-                "reference": empty_code_file,
-                "project": empty_code_file,
-                "metadata": [],
-                "analysis": error_msg
-            }
-        })
+        # Create empty code file
+        empty_code_file = {"content": "", "file_type": "", "path": ""}
         
-        return Command(
-            goto="__end__",
-            update={
-                "_internal": error_state
-            }
-        )
-
-async def validate_contract(state: AgentState) -> Command[Literal["generate", "__end__"]]:
-    """Validate the generated contract code and suggest fixes. Maximum of 1 validation iteration allowed."""
-    try:
-        # Get the generated code from state
-        internal = state["_internal"]
-        output = internal["output"]
-        contract_code = output["contract"]["content"]
-        state_code = output["state"]["content"]
-        proto_code = output["proto"]["content"]
-        analysis = internal.get("analysis") or output["analysis"]  # Try both locations
-        
-        # Get model for validation
-        model = get_model(state)
-        
-        # Prepare validation messages
-        messages = [
-            SystemMessage(content=VALIDATION_PROMPT),
-            HumanMessage(content=f"""
-Please validate the following AELF smart contract code:
-
-Proto File:
-{proto_code}
-
-State Class:
-{state_code}
-
-Contract Implementation:
-{contract_code}
-
-Identify any issues that would prevent successful compilation or cause runtime issues.""")
-        ]
-        
-        # Get validation response
-        response = await model.ainvoke(messages)
-        validation_result = response.content.strip()
-        
-        # If issues found, get fixes
-        if "No issues found" not in validation_result:
-            fix_messages = [
-                SystemMessage(content="You are an expert AELF smart contract developer. Based on the validation issues found, provide specific code fixes."),
-                HumanMessage(content=f"""
-Validation found the following issues:
-{validation_result}
-
-Please provide specific code fixes for each file:""")
-            ]
-            
-            fix_response = await model.ainvoke(fix_messages)
-            fixes = fix_response.content.strip()
-        else:
-            fixes = ""
-            
-        # Increment validation count
-        validation_count = internal.get("validation_count", 0) + 1
-        print(f"Validation iteration {validation_count} completed.")
-        
-        # Create updated state dictionary
-        updated_state = dict(internal)
-        updated_state.update({
-            "analysis": analysis,  # Preserve analysis
-            "validation_count": validation_count,
-            "validation_result": validation_result,
-            "fixes": fixes,
-            "output": {
-                **output,
-                "validation_result": validation_result,
-                "fixes": fixes
-            }
-        })
-        
-        # Return command with updated state
-        return Command(
-            goto="generate" if validation_count < 1 and "No issues found" not in validation_result else "__end__",
-            update={
-                "_internal": updated_state
-            }
-        )
-        
-    except Exception as e:
-        error_msg = f"Error in validation: {str(e)}"
-        print(f"Validation error: {error_msg}")
-        
-        # Create error state dictionary
-        error_state = dict(state["_internal"])
+        # Update output with error
         error_state["output"] = {
-            **state["_internal"]["output"],
-            "validation_error": error_msg
+            "contract": empty_code_file,
+            "state": empty_code_file,
+            "proto": empty_code_file,
+            "reference": empty_code_file,
+            "project": empty_code_file,
+            "metadata": [],
+            "analysis": error_msg
         }
         
+        # Debug log for error state
+        print(f"DEBUG - Error state: {error_state}")
+        
+        # Return error state
         return Command(
             goto="__end__",
             update={
-                "_internal": error_state
+                "generate": {
+                    "_internal": error_state
+                }
             }
         )
+
+async def validate_contract(state: AgentState) -> Dict:
+    """
+    Validate the generated contract code and provide suggestions.
+    Returns the updated state with validation results and suggestions.
+    Ensures the output structure is compatible with the UI.
+    """
+    try:
+        print("DEBUG - Starting validate_contract function")
+        
+        # Initialize internal state if not present
+        if "generate" not in state:
+            state["generate"] = {}
+        if "_internal" not in state["generate"]:
+            print("DEBUG - generate._internal not found in state, initializing it")
+            state["generate"]["_internal"] = get_default_state()["generate"]["_internal"]
+        
+        internal_state = state["generate"]["_internal"]
+        current_count = internal_state.get("validation_count", 0)
+        print(f"DEBUG - validate_contract: Current validation count: {current_count}")
+        
+        # Get the generated code from the state - this is the crucial data we need to preserve
+        output = internal_state.get("output", {})
+        
+        # Log the output structure to help with debugging
+        print(f"DEBUG - validate_contract: Output structure has keys: {list(output.keys()) if output else 'None'}")
+        
+        contract_code = output.get("contract", {}).get("content", "")
+        state_code = output.get("state", {}).get("content", "")
+        proto_code = output.get("proto", {}).get("content", "")
+        reference_code = output.get("reference", {}).get("content", "")
+        project_code = output.get("project", {}).get("content", "")
+        
+        validation_results = []
+        suggestions = []
+        
+        # Perform actual validation checks
+        if contract_code:
+            # Validate contract code
+            if "public class" not in contract_code:
+                validation_results.append("Contract class not properly defined")
+                suggestions.append("Add proper public class definition inheriting from AElfContract")
+            if "public override" not in contract_code:
+                validation_results.append("Missing method overrides")
+                suggestions.append("Implement required contract method overrides")
+                
+        if state_code:
+            # Validate state code
+            if "MappedState" not in state_code and "SingletonState" not in state_code:
+                validation_results.append("Missing state definitions")
+                suggestions.append("Add proper state variables using MappedState or SingletonState")
+                
+        if proto_code:
+            # Validate proto definitions
+            if "service" not in proto_code:
+                validation_results.append("Missing service definition in proto")
+                suggestions.append("Add proper service definition in proto file")
+            if "message" not in proto_code:
+                validation_results.append("Missing message definitions in proto")
+                suggestions.append("Add required message definitions in proto file")
+                
+        # Create validation summary
+        validation_summary = {
+            "passed": len(validation_results) == 0,
+            "issues": validation_results,
+            "suggestions": suggestions
+        }
+        
+        # Update internal state with validation results
+        updated_internal = {
+            **internal_state,
+            "validation_count": current_count + 1,
+            "validation_complete": True,
+            "validation_result": validation_summary,
+            "validation_status": "success" if len(validation_results) == 0 else "needs_improvement",
+            # Make sure we preserve the output at the expected location
+            "output": output
+        }
+        
+        print(f"DEBUG - validate_contract: Validation complete with results: {validation_summary}")
+        print(f"DEBUG - validate_contract: Updated internal state has keys: {list(updated_internal.keys())}")
+        
+        # CRITICAL: Ensure the output is in the exact format expected by the UI
+        if not output:
+            print("WARNING - validate_contract: No output found, creating empty structure")
+            updated_internal["output"] = {}
+        
+        # Return state that preserves the original structure
+        # This ensures the UI can find the data at generate._internal.output
+        return {
+            "generate": {
+                "_internal": updated_internal
+            }
+        }
+            
+    except Exception as e:
+        print(f"DEBUG - Error in validate_contract: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
+        
+        # Make sure we have internal_state defined even in case of error
+        if not 'internal_state' in locals():
+            internal_state = state.get("generate", {}).get("_internal", {})
+            if not internal_state:
+                internal_state = get_default_state()["generate"]["_internal"]
+        
+        # Preserve any existing output
+        output = internal_state.get("output", {})
+        
+        # Create a default validation result
+        validation_summary = {
+            "passed": False,
+            "issues": [f"Error during validation: {str(e)}"],
+            "suggestions": ["Fix the validation errors and try again"]
+        }
+        
+        # Return a properly structured state even in case of error
+        return {
+            "generate": {
+                "_internal": {
+                    **internal_state,
+                    "validation_count": current_count + 1 if 'current_count' in locals() else 1,
+                    "validation_complete": True,
+                    "validation_result": validation_summary,
+                    "validation_status": "error",
+                    # Make sure we preserve the output at the expected location
+                    "output": output
+                }
+            }
+        }
+
+async def invoke_model(messages):
+    """Helper function to invoke the model with messages."""
+    try:
+        # Get model
+        model = get_model({"generate": {"_internal": {}}})
+        
+        # Convert dict messages to langchain messages
+        lc_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                lc_messages.append(SystemMessage(content=msg["content"]))
+            elif msg["role"] == "user":
+                lc_messages.append(HumanMessage(content=msg["content"]))
+            elif msg["role"] == "assistant":
+                lc_messages.append(AIMessage(content=msg["content"]))
+        
+        # Invoke model
+        print(f"DEBUG - invoke_model: Invoking model with {len(lc_messages)} messages")
+        try:
+            response = await model.ainvoke(lc_messages, timeout=180)  # 3 minutes timeout
+            return response.content.strip()
+        except TimeoutError:
+            print("DEBUG - invoke_model: Model invocation timed out")
+            return "Error: Model invocation timed out. Please try again."
+    except Exception as e:
+        print(f"DEBUG - Error invoking model: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
+        return f"Error invoking model: {str(e)}"
+
+def validation_router(state: AgentState) -> str:
+    """
+    Route to the appropriate next step based on validation results.
+    Always terminates after validation with complete results.
+    Ensures the response structure is compatible with the UI.
+    """
+    print("DEBUG - Starting validation_router function")
+    try:
+        # Ensure we have the generate._internal structure
+        if "generate" not in state:
+            state["generate"] = {}
+        if "_internal" not in state["generate"]:
+            state["generate"]["_internal"] = {}
+            
+        generate = state.get("generate", {})
+        internal_state = generate.get("_internal", {})
+        
+        # We need to restructure the state to match what the UI expects
+        # The UI expects output at generate._internal.output
+        
+        # If we have validation data, make sure it's properly structured
+        if "validate" in state:
+            validate_data = state["validate"]
+            
+            # If validate contains generate._internal data, copy it to the main generate path
+            if isinstance(validate_data, dict) and "generate" in validate_data:
+                validate_generate = validate_data.get("generate", {})
+                
+                if isinstance(validate_generate, dict) and "_internal" in validate_generate:
+                    validate_internal = validate_generate.get("_internal", {})
+                    
+                    print(f"DEBUG - validation_router: validate.generate._internal keys: {list(validate_internal.keys())}")
+                    
+                    # Copy output if it exists
+                    if "output" in validate_internal:
+                        internal_state["output"] = validate_internal["output"]
+                        print("DEBUG - Copied output from validate.generate._internal to generate._internal")
+                    
+                    # Copy validation results if they exist
+                    if "validation_result" in validate_internal:
+                        internal_state["validation_result"] = validate_internal["validation_result"]
+                        print("DEBUG - Copied validation_result from validate.generate._internal to generate._internal")
+                    
+                    # Copy other important fields
+                    for field in ["validation_count", "validation_complete", "validation_status"]:
+                        if field in validate_internal:
+                            internal_state[field] = validate_internal[field]
+                    
+                    # Update the state
+                    state["generate"]["_internal"] = internal_state
+        
+        # CRITICAL: Ensure the output is in the exact format expected by the UI
+        # The UI expects data.generate._internal.output to exist
+        if "output" not in internal_state:
+            print("WARNING - No output found in generate._internal after restructuring")
+            # Create an empty output structure if none exists
+            internal_state["output"] = {}
+        
+        # Make sure validation_result exists
+        if "validation_result" not in internal_state:
+            internal_state["validation_result"] = {
+                "passed": True,
+                "issues": [],
+                "suggestions": []
+            }
+            print("DEBUG - Created default validation_result")
+        
+        # Make sure validation_status exists
+        if "validation_status" not in internal_state:
+            internal_state["validation_status"] = "success"
+            print("DEBUG - Created default validation_status")
+        
+        print(f"DEBUG - Output structure verified: generate._internal.output exists with {len(internal_state['output'])} keys")
+        print(f"DEBUG - generate._internal keys: {list(internal_state.keys())}")
+        
+        # Always terminate after validation
+        return "end"
+        
+    except Exception as e:
+        print(f"DEBUG - Error in validation_router: {str(e)}")
+        print(f"DEBUG - Error traceback: {traceback.format_exc()}")
+        return "end"
 
 def create_agent() -> StateGraph:
     """Create the agent workflow with a clean, linear flow and proper validation cycle."""
+    print("DEBUG - Starting create_agent function")
+    
     # Create a new graph
     workflow = StateGraph(AgentState)
     
     # Add nodes
     workflow.add_node("analyze", analyze_requirements)
     workflow.add_node("analyze_codebase", analyze_codebase)
-    workflow.add_node("generate", generate_contract)
+    workflow.add_node("generate_code", generate_contract)
     workflow.add_node("validate", validate_contract)
-
-    # Add conditional node for validation cycle
-    async def should_continue_validation(state: AgentState) -> bool:
-        """Helper function to determine if validation should continue."""
-        validation_count = state["_internal"].get("validation_count", 0)
-        validation_result = state["_internal"].get("validation_result", "")
-        return validation_count < 1 and "No issues found" not in validation_result
+    
+    # Define a final node to ensure proper output structure
+    async def ensure_output_structure(state: AgentState) -> AgentState:
+        """Ensure the final state has the correct structure for the UI."""
+        print("DEBUG - Ensuring final output structure")
+        
+        # Make sure we have the basic structure
+        if "generate" not in state:
+            state["generate"] = {}
+        if "_internal" not in state["generate"]:
+            state["generate"]["_internal"] = {}
+            
+        # If we have validation data, make sure it's properly structured in generate._internal
+        if "validate" in state and isinstance(state["validate"], dict):
+            validate_data = state["validate"]
+            
+            if "generate" in validate_data and isinstance(validate_data["generate"], dict):
+                validate_generate = validate_data["generate"]
+                
+                if "_internal" in validate_generate and isinstance(validate_generate["_internal"], dict):
+                    validate_internal = validate_generate["_internal"]
+                    
+                    # Copy output if it exists
+                    if "output" in validate_internal:
+                        state["generate"]["_internal"]["output"] = validate_internal["output"]
+                        print("DEBUG - Final node: Copied output from validate.generate._internal to generate._internal")
+                    
+                    # Copy validation results if they exist
+                    if "validation_result" in validate_internal:
+                        state["generate"]["_internal"]["validation_result"] = validate_internal["validation_result"]
+                        print("DEBUG - Final node: Copied validation_result from validate.generate._internal to generate._internal")
+        
+        # CRITICAL: Ensure the output is in the exact format expected by the UI
+        # The UI expects data.generate._internal.output to exist
+        internal_state = state["generate"]["_internal"]
+        
+        # If output doesn't exist at all, create an empty structure
+        if "output" not in internal_state:
+            print("WARNING - Final node: No output found, creating empty structure")
+            internal_state["output"] = {}
+        
+        # Make sure validation_result exists
+        if "validation_result" not in internal_state:
+            internal_state["validation_result"] = {
+                "passed": True,
+                "issues": [],
+                "suggestions": []
+            }
+            print("DEBUG - Final node: Created default validation_result")
+        
+        # Make sure validation_status exists
+        if "validation_status" not in internal_state:
+            internal_state["validation_status"] = "success"
+            print("DEBUG - Final node: Created default validation_status")
+        
+        # Final verification
+        print(f"DEBUG - Final node: Output structure verified with {len(state['generate']['_internal']['output'])} keys")
+        print(f"DEBUG - Final node: Final state structure: {list(state.keys())}")
+        print(f"DEBUG - Final node: generate._internal keys: {list(state['generate']['_internal'].keys())}")
+        
+        return state
+    
+    workflow.add_node("ensure_output", ensure_output_structure)
+    
+    print("DEBUG - Added all nodes to workflow")
 
     # Set the entry point
     workflow.set_entry_point("analyze")
+    print("DEBUG - Set entry point to 'analyze'")
 
-    # Define the main linear flow
+    # Define the simplified linear flow
     workflow.add_edge("analyze", "analyze_codebase")
-    workflow.add_edge("analyze_codebase", "generate")
-    workflow.add_edge("generate", "validate")
+    workflow.add_edge("analyze_codebase", "generate_code")
+    workflow.add_edge("generate_code", "validate")
     
-    # Add conditional edges from validate
+    # Add conditional edges from validate to either generate_code or ensure_output
     workflow.add_conditional_edges(
         "validate",
-        should_continue_validation,
+        validation_router,
         {
-            True: "generate",  # Continue validation cycle
-            False: END  # End the flow
+            "generate": "generate_code",
+            "end": "ensure_output"
         }
     )
     
+    # Add final edge from ensure_output to END
+    workflow.add_edge("ensure_output", END)
+    
+    print("DEBUG - Added all edges to workflow")
+    print("DEBUG - Edge configuration:")
+    print("  analyze -> analyze_codebase")
+    print("  analyze_codebase -> generate_code")
+    print("  generate_code -> validate")
+    print("  validate -> [conditional: generate_code or ensure_output]")
+    print("  ensure_output -> END")
+    
     # Compile the graph
-    return workflow.compile()
+    print("DEBUG - Compiling workflow")
+    compiled = workflow.compile()
+    print("DEBUG - Workflow compilation complete")
+    
+    return compiled
 
 # Create the graph instance
 graph = create_agent()
