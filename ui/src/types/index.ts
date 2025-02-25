@@ -9,18 +9,20 @@ export interface GeneratedFile {
 }
 
 export interface AgentResponse {
-  generate: {
-    _internal: {
-      output: {
-        reference: any;
-        contract: GeneratedFile;
-        state: GeneratedFile;
-        proto: GeneratedFile;
-        project: GeneratedFile;
-        metadata: GeneratedFile[];
+  validate: {
+    generate: {
+      _internal: {
+        output: {
+          reference: any;
+          contract: GeneratedFile;
+          state: GeneratedFile;
+          proto: GeneratedFile;
+          project: GeneratedFile;
+          metadata: GeneratedFile[];
+        };
       };
     };
-  };
+  }
 }
 
 export interface ChatMessage {
