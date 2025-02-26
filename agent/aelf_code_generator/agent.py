@@ -627,6 +627,10 @@ Please generate the complete smart contract implementation following AELF's proj
             
             # Collect content if in a code block
             if in_code_block and current_component:
+                # Skip the first line if it's a comment with the file path
+                if len(current_content) == 0 and (line.startswith("// ") or line.startswith("<!-- ")):
+                    if ("src/" in line or line.endswith(".cs") or line.endswith(".proto") or line.endswith(".csproj")):
+                        continue
                 current_content.append(line)
 
         # Create the output structure with metadata containing additional files
@@ -639,6 +643,20 @@ Please generate the complete smart contract implementation following AELF's proj
             "metadata": additional_files,
             "analysis": analysis  # Preserve analysis in output
         }
+        
+        # Remove commented filenames from the beginning of the content
+        for component_key in ["contract", "state", "proto", "reference", "project"]:
+            component = output[component_key]
+            content = component["content"]
+            
+            # If content starts with a commented filename, remove it
+            if content:
+                lines = content.split("\n")
+                if lines and (
+                    (lines[0].startswith("// src/") or lines[0].startswith("// Src/")) or
+                    (lines[0].startswith("<!-- src/") or lines[0].startswith("<!-- Src/"))
+                ):
+                    component["content"] = "\n".join(lines[1:])
         
         # Remove contract_name fields from components in the output
         for component_key in ["contract", "state", "proto", "reference", "project"]:
