@@ -913,7 +913,7 @@ def validation_router(state: AgentState) -> str:
         internal_state["validation_status"] = "success"
     
     # Allow only one validation cycle
-    return "generate_code" if current_count == 0 else "__end__"
+    return "generate_code" if current_count < 2 else "__end__"
 
 def create_agent() -> StateGraph:
     """Create the agent workflow with a linear flow and single validation cycle."""
