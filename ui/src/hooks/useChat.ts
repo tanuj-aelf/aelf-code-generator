@@ -50,7 +50,7 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
         throw new Error(data.error || `HTTP error! status: ${response.status}`);
       }
 
-      if (!data.generate?._internal?.output) {
+      if (!data.validate?.generate?._internal?.output) {
         throw new Error("Invalid response format from agent");
       }
 

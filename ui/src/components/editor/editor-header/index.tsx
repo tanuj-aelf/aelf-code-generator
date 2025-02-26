@@ -202,7 +202,7 @@ export const EditorHeader = () => {
 
   const HEADER_BUTTONS = [
     {
-      title: "AI Auidit",
+      title: "AI Audit",
       disabled: checkingBalance === "audit",
       onClick: onAudit,
       icon:
