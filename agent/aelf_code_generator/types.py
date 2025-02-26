@@ -39,7 +39,7 @@ class InternalState(TypedDict, total=False):
     output: ContractOutput
     validation_count: int
     validation_result: str
-    fixes: str
+    fixes: str  # Store validation feedback for next iteration
     validation_complete: bool
 
 class AgentState(TypedDict, total=False):

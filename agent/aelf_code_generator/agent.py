@@ -695,7 +695,7 @@ Please generate the complete smart contract implementation following AELF's proj
         )
 
 async def validate_contract(state: AgentState) -> Dict:
-    """Validate the generated contract code and provide suggestions."""
+    """Validate the generated contract code and provide suggestions using LLM."""
     try:
         # Initialize internal state if not present
         if "generate" not in state:
@@ -715,57 +715,111 @@ async def validate_contract(state: AgentState) -> Dict:
         reference_code = output.get("reference", {}).get("content", "")
         project_code = output.get("project", {}).get("content", "")
         
-        validation_results = []
-        suggestions = []
+        # Create a combined code representation for validation
+        code_to_validate = f"""Main Contract File:
+```csharp
+{contract_code}
+```
+
+State Class File:
+```csharp
+{state_code}
+```
+
+Proto File:
+```protobuf
+{proto_code}
+```
+
+Reference Contract File:
+```csharp
+{reference_code}
+```
+
+Project File:
+```xml
+{project_code}
+```"""
+
+        # Get model with state
+        model = get_model(state)
         
-        # Perform actual validation checks
-        if contract_code:
-            # Validate contract code
-            if "public class" not in contract_code:
-                validation_results.append("Contract class not properly defined")
-                suggestions.append("Add proper public class definition inheriting from AElfContract")
-            if "public override" not in contract_code:
-                validation_results.append("Missing method overrides")
-                suggestions.append("Implement required contract method overrides")
-                
-        if state_code:
-            # Validate state code
-            if "MappedState" not in state_code and "SingletonState" not in state_code:
-                validation_results.append("Missing state definitions")
-                suggestions.append("Add proper state variables using MappedState or SingletonState")
-                
-        if proto_code:
-            # Validate proto definitions
-            if "service" not in proto_code:
-                validation_results.append("Missing service definition in proto")
-                suggestions.append("Add proper service definition in proto file")
-            if "message" not in proto_code:
-                validation_results.append("Missing message definitions in proto")
-                suggestions.append("Add required message definitions in proto file")
-                
-        # Create validation summary
-        validation_summary = {
-            "passed": len(validation_results) == 0,
-            "issues": validation_results,
-            "suggestions": suggestions
-        }
+        # Generate validation using the LLM
+        messages = [
+            SystemMessage(content=VALIDATION_PROMPT),
+            HumanMessage(content=f"""
+Please validate the following smart contract code generated for AELF and provide a detailed analysis with specific issues and fixes:
+
+{code_to_validate}
+
+Categorize your findings into:
+1. Critical issues (must be fixed)
+2. Improvements (recommended but not critical)
+3. Best practices
+
+For each issue found, provide specific suggestions on how to fix it. If no issues are found in a category, explicitly state "No issues found in this category."
+""")
+        ]
         
-        # Update internal state with validation results
-        updated_internal = {
-            **internal_state,
-            "validation_count": current_count + 1,
-            "validation_complete": True,
-            "validation_result": validation_summary,
-            "validation_status": "success" if len(validation_results) == 0 else "needs_improvement",
-            "output": output  # Preserve the output structure
-        }
-        
-        # Return state in the format expected by UI
-        return {
-            "generate": {
-                "_internal": updated_internal
+        try:
+            # Set timeout for validation
+            validation_response = await model.ainvoke(messages, timeout=120)
+            validation_feedback = validation_response.content.strip()
+            
+            if not validation_feedback:
+                raise ValueError("Validation failed - empty response")
+                
+            # Basic parsing to extract issues and suggestions
+            validation_results = []
+            suggestions = []
+            
+            # Simple parsing logic - extract issues and suggestions
+            lines = validation_feedback.split('\n')
+            for i, line in enumerate(lines):
+                if "issue" in line.lower() or "error" in line.lower() or "problem" in line.lower() or "missing" in line.lower():
+                    validation_results.append(line.strip())
+                    # Look for suggestion in the next few lines
+                    for j in range(i+1, min(i+5, len(lines))):
+                        if "fix" in lines[j].lower() or "suggestion" in lines[j].lower() or "should" in lines[j].lower() or "add" in lines[j].lower() or "change" in lines[j].lower():
+                            suggestions.append(lines[j].strip())
+                            break
+            
+            # If no explicit issues found but validation contains critical keywords
+            if not validation_results:
+                for critical_keyword in ["error", "missing", "invalid", "incorrect", "problem", "issue"]:
+                    if critical_keyword in validation_feedback.lower():
+                        validation_results.append(f"Potential issue detected: review '{critical_keyword}' mentions in validation")
+                        break
+            
+            # Create validation summary
+            validation_summary = {
+                "passed": len(validation_results) == 0 or "no issues found" in validation_feedback.lower(),
+                "issues": validation_results[:5],  # Limit to top 5 issues
+                "suggestions": suggestions[:5]     # Limit to top 5 suggestions
             }
-        }
+            
+            # Update internal state with validation results and full feedback
+            updated_internal = {
+                **internal_state,
+                "validation_count": current_count + 1,
+                "validation_complete": True,
+                "validation_result": validation_summary,
+                "validation_status": "success" if validation_summary["passed"] else "needs_improvement",
+                "output": output,  # Preserve the output structure
+                "fixes": validation_feedback  # Store full validation feedback for next iteration
+            }
+            
+            # Return state in the format expected by UI
+            return {
+                "generate": {
+                    "_internal": updated_internal
+                }
+            }
+                
+        except Exception as e:
+            print(f"Error during LLM validation: {str(e)}")
+            print(f"Error traceback: {traceback.format_exc()}")
+            raise
             
     except Exception as e:
         print(f"Error in validate_contract: {str(e)}")
@@ -796,7 +850,8 @@ async def validate_contract(state: AgentState) -> Dict:
                     "validation_complete": True,
                     "validation_result": validation_summary,
                     "validation_status": "error",
-                    "output": output  # Preserve the output structure
+                    "output": output,  # Preserve the output structure
+                    "fixes": f"Error during validation: {str(e)}\nPlease review the generated code and fix any apparent issues."
                 }
             }
         }
@@ -825,6 +880,8 @@ def validation_router(state: AgentState) -> str:
         }
     if "validation_status" not in internal_state:
         internal_state["validation_status"] = "success"
+    if "fixes" not in internal_state:
+        internal_state["fixes"] = ""
     
     # Allow only one validation cycle
     return "generate_code" if current_count < 2 else "__end__"
