@@ -54,9 +54,6 @@ Common coding patterns to use:
 Project structure to follow:
 {project_structure}
 
-Relevant sample references:
-{relevant_samples}
-
 Generate the following files with proper implementations:
 
 1. Main Contract File (src/ContractName.cs):
@@ -244,42 +241,6 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate_code"
             analysis = "No analysis provided. Proceeding with generic AELF contract implementation."
             internal_state["analysis"] = analysis
         
-        # Identify relevant sample based on contract type
-        contract_type = "smart contract"  # default
-        relevant_samples = []
-        
-        # Determine contract type from analysis
-        if "NFT" in analysis or "token" in analysis.lower():
-            contract_type = "NFT contract"
-            relevant_samples = ["nft"]
-        elif "DAO" in analysis.lower():
-            contract_type = "DAO contract"
-            relevant_samples = ["simple-dao"]
-        elif "game" in analysis.lower() or "lottery" in analysis.lower():
-            contract_type = "game contract"
-            relevant_samples = ["lottery-game", "tic-tac-toe"]
-        elif "todo" in analysis.lower():
-            contract_type = "todo contract"
-            relevant_samples = ["todo"]
-        elif "vote" in analysis.lower():
-            contract_type = "voting contract"
-            relevant_samples = ["vote"]
-        elif "allowance" in analysis.lower() or "spending" in analysis.lower():
-            contract_type = "allowance contract"
-            relevant_samples = ["allowance"]
-        elif "staking" in analysis.lower():
-            contract_type = "staking contract"
-            relevant_samples = ["staking"]
-        elif "donation" in analysis.lower():
-            contract_type = "donation contract"
-            relevant_samples = ["donation"]
-        elif "expense" in analysis.lower() or "tracking" in analysis.lower():
-            contract_type = "expense tracking contract"
-            relevant_samples = ["expense-tracker"]
-        else:
-            # For basic contracts, look at hello-world
-            relevant_samples = ["hello-world"]
-            
         # Get model to analyze requirements
         model = get_model(state)
         
@@ -287,13 +248,10 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate_code"
         messages = [
             SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
             HumanMessage(content=f"""
-Based on the following contract requirements and type, provide implementation insights and patterns from AELF sample contracts.
+Based on the following contract requirements, provide implementation insights and patterns for an AELF smart contract.
 
 Contract Requirements:
 {analysis}
-
-Contract Type: {contract_type}
-Relevant Sample(s): {', '.join(relevant_samples)}
 
 Please provide structured insights focusing on:
 
@@ -304,14 +262,14 @@ Please provide structured insights focusing on:
    - Contract references needed
 
 2. Smart Contract Patterns
-   - State management patterns for this type
+   - State management patterns
    - Access control patterns needed
    - Event handling patterns
    - Common utility functions
    - Error handling strategies
 
 3. Implementation Guidelines
-   - Best practices for this contract type
+   - Best practices for AELF contracts
    - Security considerations
    - Performance optimizations
    - Testing approaches
@@ -417,7 +375,6 @@ Your insights will guide the code generation process.""")
             insights_dict = {
                 "project_structure": project_structure,
                 "coding_patterns": coding_patterns,
-                "relevant_samples": relevant_samples,
                 "implementation_guidelines": implementation_guidelines
             }
             
@@ -461,7 +418,6 @@ Your insights will guide the code generation process.""")
 2. Event emission for status changes
 3. Authorization checks using Context.Sender
 4. Input validation with proper error handling""",
-            "relevant_samples": ["hello-world"],
             "implementation_guidelines": """Follow AELF best practices:
 1. Use proper base classes and inheritance
 2. Implement robust state management
@@ -504,7 +460,6 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
             insights = {
                 "project_structure": "Standard AELF project structure",
                 "coding_patterns": "Common AELF patterns",
-                "relevant_samples": ["hello-world"],
                 "implementation_guidelines": "Follow AELF best practices"
             }
             internal_state["codebase_insights"] = insights
@@ -517,8 +472,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
             SystemMessage(content=CODE_GENERATION_PROMPT.format(
                 implementation_guidelines=insights.get("implementation_guidelines", ""),
                 coding_patterns=insights.get("coding_patterns", ""),
-                project_structure=insights.get("project_structure", ""),
-                relevant_samples="\n".join(insights.get("relevant_samples", []))
+                project_structure=insights.get("project_structure", "")
             )),
             HumanMessage(content=f"""
 Analysis:
@@ -847,35 +801,6 @@ async def validate_contract(state: AgentState) -> Dict:
             }
         }
 
-async def invoke_model(messages):
-    """Helper function to invoke the model with messages."""
-    try:
-        # Get model
-        model = get_model({"generate": {"_internal": {}}})
-        
-        # Convert dict messages to langchain messages
-        lc_messages = []
-        for msg in messages:
-            if msg["role"] == "system":
-                lc_messages.append(SystemMessage(content=msg["content"]))
-            elif msg["role"] == "user":
-                lc_messages.append(HumanMessage(content=msg["content"]))
-            elif msg["role"] == "assistant":
-                lc_messages.append(AIMessage(content=msg["content"]))
-        
-        # Invoke model
-        print(f"DEBUG - invoke_model: Invoking model with {len(lc_messages)} messages")
-        try:
-            response = await model.ainvoke(lc_messages, timeout=180)  # 3 minutes timeout
-            return response.content.strip()
-        except TimeoutError:
-            print("DEBUG - invoke_model: Model invocation timed out")
-            return "Error: Model invocation timed out. Please try again."
-    except Exception as e:
-        print(f"Error invoking model: {str(e)}")
-        print(f"Error traceback: {traceback.format_exc()}")
-        return f"Error invoking model: {str(e)}"
-
 def validation_router(state: AgentState) -> str:
     """
     Route to the appropriate next step based on validation results.
@@ -888,17 +813,6 @@ def validation_router(state: AgentState) -> str:
             
     internal_state = state["generate"]["_internal"]
     current_count = internal_state.get("validation_count", 0)
-    
-    # If we have validation data, merge it into the main state
-    if "validate" in state:
-        validate_data = state.get("validate", {})
-        if "generate" in validate_data and "_internal" in validate_data["generate"]:
-            validate_internal = validate_data["generate"]["_internal"]
-            
-            # Copy validation data to main state
-            for key in ["output", "validation_result", "validation_count", "validation_complete", "validation_status"]:
-                if key in validate_internal:
-                    internal_state[key] = validate_internal[key]
     
     # Ensure required fields exist
     if "output" not in internal_state:
