@@ -4,6 +4,7 @@ This module defines the main agent workflow for AELF smart contract code generat
 
 import os
 import traceback
+import re
 from typing import Dict, List, Any, Annotated, Literal
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -159,6 +160,84 @@ Focus on these critical areas:
 - Verify error message clarity
 
 Provide specific issues found and suggest fixes. If no issues are found, explicitly state "No issues found"."""
+
+PROTO_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Your task is to generate the content for an AELF-specific proto file.
+
+Generate ONLY the content of the requested proto file. Do not include any explanations or markdown. The output should be valid proto syntax that can be directly saved to a file.
+
+Proto file to generate: {proto_file_path}
+
+For AELF proto files, follow these important guidelines:
+1. Use the correct package name
+2. Include proper csharp_namespace
+3. Add comments explaining the purpose of each message, enum, or extension
+4. Follow AELF's established structure and conventions for this file type
+5. Include ALL required fields, options, and imports
+6. Use correct field numbers for extensions
+
+Example structure for aelf/options.proto:
+- Extension for MethodOptions (is_view)
+- Extended options for message fields (is_identity, behaves_like_collection, struct_type)
+- Options for generating event code (csharp_namespace, base, controller)
+
+Example structure for aelf/core.proto:
+- Basic AELF types like Address, Hash
+- Merkle path related structures
+"""
+
+async def generate_proto_file_content(model, proto_file_path: str) -> str:
+    """Generate content for an AELF-specific proto file using the LLM."""
+    try:
+        # Generate proto file content using the LLM
+        messages = [
+            SystemMessage(content=PROTO_GENERATION_PROMPT.format(proto_file_path=proto_file_path)),
+            HumanMessage(content=f"Please generate the content for the AELF proto file: {proto_file_path}")
+        ]
+        
+        # Use a shorter timeout for proto generation - these are smaller files
+        response = await model.ainvoke(messages, timeout=60)
+        content = response.content.strip()
+        
+        if not content or "```" in content:
+            # If the model returned markdown or empty content, clean it up
+            content = content.replace("```protobuf", "").replace("```proto", "").replace("```", "").strip()
+            
+        if not content:
+            print(f"Warning: LLM generated empty content for {proto_file_path}")
+            # Generate minimal valid proto file with correct package name
+            package_name = proto_file_path.split("/")[-1].replace(".proto", "")
+            if "aelf/" in proto_file_path:
+                package_name = "aelf"
+            elif "acs" in proto_file_path:
+                package_name = proto_file_path.split("/")[-1].replace(".proto", "")
+            
+            return f"""syntax = "proto3";
+
+// This is a minimal placeholder generated for {proto_file_path}
+// The LLM was unable to generate proper content
+package {package_name};
+
+// Please review and complete this proto file manually
+"""
+            
+        return content
+    except Exception as e:
+        print(f"Error generating proto content for {proto_file_path}: {str(e)}")
+        # Generate minimal valid proto file with package name derived from path
+        package_name = proto_file_path.split("/")[-1].replace(".proto", "")
+        if "aelf/" in proto_file_path:
+            package_name = "aelf"
+        elif "acs" in proto_file_path:
+            package_name = proto_file_path.split("/")[-1].replace(".proto", "")
+        
+        return f"""syntax = "proto3";
+
+// This is a minimal placeholder generated for {proto_file_path}
+// Error during generation: {str(e)}
+package {package_name};
+
+// Please review and complete this proto file manually
+"""
 
 async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_codebase", "__end__"]]:
     """Analyze the dApp description and provide detailed requirements analysis."""
@@ -627,7 +706,60 @@ Please generate the complete smart contract implementation following AELF's proj
             
             # Collect content if in a code block
             if in_code_block and current_component:
+                # Skip the first line if it's a comment with the file path
+                if len(current_content) == 0 and (line.startswith("// ") or line.startswith("<!-- ")):
+                    if ("src/" in line or line.endswith(".cs") or line.endswith(".proto") or line.endswith(".csproj")):
+                        continue
                 current_content.append(line)
+
+        # Check the proto file for AELF-specific imports and generate additional proto files
+        proto_content = components["proto"].get("content", "")
+        if proto_content:
+            # Parse the proto file for imports
+            aelf_imports = []
+            import_re = r'import\s+"([^"]+)";'
+            imports = re.findall(import_re, proto_content)
+            
+            for import_path in imports:
+                # Check if this is an AELF-specific import
+                if import_path.startswith("aelf/"):
+                    aelf_imports.append(import_path)
+            
+            # Generate content for AELF-specific imports
+            for aelf_import in aelf_imports:
+                import_path = f"src/Protobuf/reference/{aelf_import}"
+                
+                # Generate content using LLM instead of hardcoded templates
+                import_content = await generate_proto_file_content(model, aelf_import)
+                
+                # Add to additional files if we have content
+                if import_content:
+                    additional_files.append({
+                        "content": import_content,
+                        "file_type": "proto",
+                        "path": import_path
+                    })
+            
+            # Check for ACS imports
+            acs_imports = []
+            for import_path in imports:
+                if "acs" in import_path.lower():
+                    acs_imports.append(import_path)
+            
+            # Generate content for ACS imports
+            for acs_import in acs_imports:
+                import_path = f"src/Protobuf/reference/{acs_import}"
+                
+                # Generate content using LLM instead of hardcoded templates
+                import_content = await generate_proto_file_content(model, acs_import)
+                
+                # Add to additional files if we have content
+                if import_content:
+                    additional_files.append({
+                        "content": import_content,
+                        "file_type": "proto",
+                        "path": import_path
+                    })
 
         # Create the output structure with metadata containing additional files
         output = {
@@ -639,6 +771,20 @@ Please generate the complete smart contract implementation following AELF's proj
             "metadata": additional_files,
             "analysis": analysis  # Preserve analysis in output
         }
+        
+        # Remove commented filenames from the beginning of the content
+        for component_key in ["contract", "state", "proto", "reference", "project"]:
+            component = output[component_key]
+            content = component["content"]
+            
+            # If content starts with a commented filename, remove it
+            if content:
+                lines = content.split("\n")
+                if lines and (
+                    (lines[0].startswith("// src/") or lines[0].startswith("// Src/")) or
+                    (lines[0].startswith("<!-- src/") or lines[0].startswith("<!-- Src/"))
+                ):
+                    component["content"] = "\n".join(lines[1:])
         
         # Remove contract_name fields from components in the output
         for component_key in ["contract", "state", "proto", "reference", "project"]:
