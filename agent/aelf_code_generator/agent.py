@@ -652,6 +652,8 @@ Please generate the complete smart contract implementation following AELF's proj
         current_content = []
         in_code_block = False
         current_file_type = ""
+        found_components = set()  # Track which components we've already found
+        contract_files = []  # Store all contract files (for multiple contract files)
         
         for i, line in enumerate(content.split("\n")):
             # Handle code block markers
@@ -687,15 +689,35 @@ Please generate the complete smart contract implementation following AELF's proj
                             elif ".proto" in file_path:
                                 current_component = "proto"
                             elif file_path.endswith(".cs"):
-                                current_component = "contract"
+                                # Check if we've already found a contract component
+                                if "contract" in found_components:
+                                    # This is an additional contract file
+                                    current_component = f"additional_contract_{len(contract_files)}"
+                                    contract_files.append({
+                                        "content": "",
+                                        "file_type": current_file_type,
+                                        "path": file_path
+                                    })
+                                else:
+                                    current_component = "contract"
+                                    found_components.add("contract")
                             
                             if current_component:
-                                components[current_component]["file_type"] = current_file_type
+                                if current_component.startswith("additional_contract_"):
+                                    # For additional contract files, store the file path directly
+                                    idx = int(current_component.split("_")[-1])
+                                    contract_files[idx]["path"] = file_path
+                                else:
+                                    components[current_component]["file_type"] = current_file_type
                 else:
                     # End of code block
                     if current_component and current_content:
                         code_content = "\n".join(current_content).strip()
-                        if current_component in components:
+                        if current_component.startswith("additional_contract_"):
+                            # Store content for additional contract file
+                            idx = int(current_component.split("_")[-1])
+                            contract_files[idx]["content"] = code_content
+                        elif current_component in components:
                             # Update content with contract name
                             code_content, _ = update_contract_name_references(code_content, "")
                             components[current_component]["content"] = code_content
@@ -711,6 +733,15 @@ Please generate the complete smart contract implementation following AELF's proj
                     if ("src/" in line or line.endswith(".cs") or line.endswith(".proto") or line.endswith(".csproj")):
                         continue
                 current_content.append(line)
+
+        # Add all additional contract files to metadata
+        for contract_file in contract_files:
+            content, path = update_contract_name_references(contract_file["content"], contract_file["path"])
+            additional_files.append({
+                "content": content,
+                "file_type": contract_file["file_type"],
+                "path": path
+            })
 
         # Check the proto file for AELF-specific imports and generate additional proto files
         proto_content = components["proto"].get("content", "")
