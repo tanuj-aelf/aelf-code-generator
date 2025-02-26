@@ -534,7 +534,7 @@ Please generate the complete smart contract implementation following AELF's proj
         
         try:
             # Set a longer timeout for code generation
-            response = await model.ainvoke(messages, timeout=150)  # 5 minutes timeout
+            response = await model.ainvoke(messages, timeout=180)  # 3 minutes timeout
             content = response.content
             
             if not content:
@@ -685,6 +685,11 @@ Please generate the complete smart contract implementation following AELF's proj
             "metadata": additional_files,
             "analysis": analysis  # Preserve analysis in output
         }
+        
+        # Remove contract_name fields from components in the output
+        for component_key in ["contract", "state", "proto", "reference", "project"]:
+            if "contract_name" in output[component_key]:
+                del output[component_key]["contract_name"]
         
         # Update internal state with output
         internal_state["output"] = output
