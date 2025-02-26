@@ -29,6 +29,10 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
 
     setLoading(true);
     try {
+      // Create an AbortController with a 5-minute timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes
+
       const response = await fetch("/api/copilotkit", {
         method: "POST",
         headers: {
@@ -42,7 +46,11 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
             },
           ],
         }),
+        signal: controller.signal,
       });
+
+      // Clear the timeout
+      clearTimeout(timeoutId);
 
       const data = await response.json();
 
@@ -66,12 +74,17 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
       onSuccess?.(data);
     } catch (error) {
       console.error("Error generating code:", error);
+      
+      // Handle AbortError specifically
+      const errorMessage = error instanceof DOMException && error.name === "AbortError"
+        ? "The request took too long to complete. Please try again with a simpler request."
+        : "Sorry, there was an error generating the code. Please try again.";
+      
       setMessages((prev) => [
         ...prev,
         {
           role: "assistant",
-          content:
-            "Sorry, there was an error generating the code. Please try again.",
+          content: errorMessage,
         },
       ]);
       onError?.(error as Error);

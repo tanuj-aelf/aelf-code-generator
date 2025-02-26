@@ -29,7 +29,7 @@ def get_model(state: AgentState) -> BaseChatModel:
         from langchain_openai import AzureChatOpenAI
         print("Initializing AzureChatOpenAI")
         return AzureChatOpenAI(
-            azure_deployment="dapp-factory-gpt-4o",
+            azure_deployment="dapp-factory-gpt-4o-westus",
             azure_endpoint="https://zhife-m5vtfkd0-westus.services.ai.azure.com/",
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version="2024-02-15-preview",
