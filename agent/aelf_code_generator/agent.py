@@ -534,7 +534,7 @@ Please generate the complete smart contract implementation following AELF's proj
         
         try:
             # Set a longer timeout for code generation
-            response = await model.ainvoke(messages, timeout=150)  # 5 minutes timeout
+            response = await model.ainvoke(messages, timeout=180)  # 3 minutes timeout
             content = response.content
             
             if not content:
@@ -685,6 +685,11 @@ Please generate the complete smart contract implementation following AELF's proj
             "metadata": additional_files,
             "analysis": analysis  # Preserve analysis in output
         }
+        
+        # Remove contract_name fields from components in the output
+        for component_key in ["contract", "state", "proto", "reference", "project"]:
+            if "contract_name" in output[component_key]:
+                del output[component_key]["contract_name"]
         
         # Update internal state with output
         internal_state["output"] = output
@@ -908,7 +913,7 @@ def validation_router(state: AgentState) -> str:
         internal_state["validation_status"] = "success"
     
     # Allow only one validation cycle
-    return "generate_code" if current_count == 0 else "__end__"
+    return "generate_code" if current_count < 2 else "__end__"
 
 def create_agent() -> StateGraph:
     """Create the agent workflow with a linear flow and single validation cycle."""
