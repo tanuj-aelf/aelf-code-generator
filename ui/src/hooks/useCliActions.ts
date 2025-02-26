@@ -41,12 +41,13 @@ export function useCliCommands() {
 
     if (
       content.includes("Determining projects to restore") ||
-      content.includes("file found")
+      content.includes("file found") ||
+      content.includes("Build FAILED")
     ) {
-      throw new Error(content);
+      return { dll: "", success: false, message: content };
     }
 
-    return { dll: content };
+    return { dll: content, success: true, message: "Build Success" };
   };
 
   const testService = async (files: FileContent[]) => {
@@ -121,7 +122,7 @@ export function useCliCommands() {
           codeHash: codeHash,
           auditType: auditType,
           transactionId: TransactionId,
-          message: ""
+          message: "",
         };
       } catch (err) {
         return {
@@ -147,11 +148,14 @@ export function useCliCommands() {
         .filter((i) => i.path.startsWith("src"));
       try {
         let dll: string | undefined;
-        dll = (await buildService(files)).dll;
-        console.log(dll, "-- build result");
-        if (typeof dll === "string") {
-          await db.workspaces.update(workspaceName, { dll });
-          return { success: true, message: "Build successful." };
+        const buildResult = await buildService(files);
+        if (buildResult.success && buildResult.dll) {
+          if (typeof dll === "string") {
+            await db.workspaces.update(workspaceName, { dll });
+            return { success: true, message: "Build successful." };
+          }
+        } {
+          return { success: false, message: buildResult.message };
         }
       } catch (err) {
         let message;

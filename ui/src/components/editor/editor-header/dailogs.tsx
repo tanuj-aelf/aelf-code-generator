@@ -244,7 +244,7 @@ const Dialogs = ({
               >
                 {!isActionCompleted ? (
                   "Deploying..."
-                ) : (
+                ) : buildDeployStatus === "success" ? (
                   <div>
                     <p className="text-[13px]">TransactionId: </p>
                     <Link
@@ -257,7 +257,11 @@ const Dialogs = ({
                     </Link>
                     <Deployment id={actionMessage} />
                   </div>
-                )}
+                ) :  <p
+                className={cn("text-sm", "text-red-400")}
+              >
+                {actionMessage}
+              </p>}
               </DialogDescription>
             </div>
           </div>
