@@ -1033,6 +1033,288 @@ For each issue found, provide specific suggestions on how to fix it. If no issue
             }
         }
 
+async def test_contract(state: AgentState) -> Dict:
+    """
+    Test the generated contract by sending it to the AELF playground API.
+    Handles build testing and code fixes internally for up to 2 iterations.
+    
+    This function:
+    1. Creates a zip file from the generated contract files
+    2. Sends the zip to the AELF playground API for build testing
+    3. If build fails, generates and applies fixes
+    4. Repeats the process up to 2 times if needed
+    
+    Args:
+        state: The current state of the agent workflow
+        
+    Returns:
+        A dictionary containing test results and any identified issues
+    """
+    import os
+    import zipfile
+    import json
+    import tempfile
+    import subprocess
+    import base64
+    
+    # Initialize internal state if not present
+    if "generate" not in state:
+        state["generate"] = {}
+    if "_internal" not in state["generate"]:
+        state["generate"]["_internal"] = {}
+    
+    internal_state = state["generate"]["_internal"]
+    
+    # Get or initialize the test cycle count
+    test_cycle_count = internal_state.get("test_cycle_count", 0)
+    max_cycles = 2
+    
+    while test_cycle_count < max_cycles:
+        internal_state["test_cycle_count"] = test_cycle_count + 1
+        
+        # Initialize test results for this iteration
+        test_results = {
+            "passed": False,
+            "build_output": "",
+            "errors": [],
+            "warnings": [],
+            "dll_output": "",
+            "test_cycle": test_cycle_count + 1
+        }
+        
+        try:
+            # Get the output from the state
+            output = internal_state.get("output", {})
+            
+            # Create a temporary directory to store the files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Create src directory
+                src_dir = os.path.join(temp_dir, "src")
+                os.makedirs(src_dir, exist_ok=True)
+                
+                # Extract contract, state and proto files from output
+                files_to_write = []
+                
+                if "contract" in output and "content" in output["contract"]:
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, os.path.basename(output["contract"].get("path", "Contract.cs"))),
+                        "content": output["contract"]["content"]
+                    })
+                
+                if "state" in output and "content" in output["state"]:
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, os.path.basename(output["state"].get("path", "ContractState.cs"))),
+                        "content": output["state"]["content"]
+                    })
+                
+                if "proto" in output and "content" in output["proto"]:
+                    # Create protobuf directory if it exists in the path
+                    proto_path = output["proto"].get("path", "Protobuf/contract.proto")
+                    proto_dir = os.path.dirname(proto_path)
+                    if proto_dir:
+                        os.makedirs(os.path.join(src_dir, proto_dir), exist_ok=True)
+                    
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, proto_path),
+                        "content": output["proto"]["content"]
+                    })
+                
+                # Add any additional files from output
+                for key, value in output.items():
+                    if key not in ["contract", "state", "proto"] and isinstance(value, dict) and "content" in value and "path" in value:
+                        # Create directory if needed
+                        file_dir = os.path.dirname(value["path"])
+                        if file_dir:
+                            os.makedirs(os.path.join(src_dir, file_dir), exist_ok=True)
+                        
+                        files_to_write.append({
+                            "path": os.path.join(src_dir, value["path"]),
+                            "content": value["content"]
+                        })
+                
+                # Write all files
+                for file_info in files_to_write:
+                    with open(file_info["path"], "w") as f:
+                        f.write(file_info["content"])
+                
+                # Create the zip file
+                zip_path = os.path.join(temp_dir, "src.zip")
+                with zipfile.ZipFile(zip_path, "w") as zipf:
+                    for root, _, files in os.walk(src_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, temp_dir)
+                            zipf.write(file_path, arcname)
+                
+                # Send the zip file to the AELF playground API
+                curl_cmd = [
+                    "curl", "--location", "https://playground.aelf.com/playground/build",
+                    "--form", f'contractFiles=@"{zip_path}"'
+                ]
+                
+                # Execute the curl command
+                process = subprocess.run(curl_cmd, capture_output=True, text=True)
+                
+                # Process the API response
+                if process.returncode == 0:
+                    response_text = process.stdout
+                    
+                    # Check if the response indicates build success (contains base64 DLL)
+                    if not response_text.strip().startswith("TV") and "error" in response_text.lower():
+                        # Build failed - extract error messages
+                        test_results["passed"] = False
+                        test_results["build_output"] = response_text
+                        
+                        # Parse error messages
+                        error_lines = [line for line in response_text.split('\n') if "error" in line.lower()]
+                        test_results["errors"] = error_lines
+                        
+                        # Parse warning messages
+                        warning_lines = [line for line in response_text.split('\n') if "warning" in line.lower()]
+                        test_results["warnings"] = warning_lines
+                        
+                        # If we have errors and haven't reached max cycles, try to fix them
+                        if test_cycle_count < max_cycles - 1:
+                            # Prepare prompt for generating fixes
+                            error_list = "\n".join(error_lines[:10])  # Limit to first 10 errors
+                            
+                            # Create a map of file extensions to their descriptions
+                            file_type_descriptions = {
+                                ".cs": "C# source code file",
+                                ".csproj": "C# project file",
+                                ".proto": "Protocol Buffer definition file"
+                            }
+                            
+                            # Collect all files content for context
+                            files_context = []
+                            for file_info in files_to_write:
+                                file_ext = os.path.splitext(file_info["path"])[1]
+                                file_type = file_type_descriptions.get(file_ext, "source file")
+                                files_context.append(f"""
+                                File: {os.path.basename(file_info["path"])} ({file_type})
+                                Content:
+                                {file_info["content"]}
+                                """)
+                            
+                            files_content = "\n---\n".join(files_context)
+                            
+                            prompt = f"""
+                            You are an expert AELF smart contract developer. The contract build has failed with the following errors:
+                            
+                            {error_list}
+                            
+                            Here are all the current contract files:
+                            
+                            {files_content}
+                            
+                            Please analyze these errors and generate fixes for the code. Focus on:
+                            1. Missing or incorrect imports/using statements
+                            2. Class inheritance and type issues
+                            3. Static vs instance member declarations
+                            4. Project file configuration issues
+                            5. Proto file syntax and compatibility
+                            6. Any syntax or compiler errors
+                            
+                            For each file that needs fixes, specify:
+                            1. The filename
+                            2. The required changes
+                            3. The complete updated file content
+                            
+                            Format your response as:
+                            [Filename 1]
+                            Changes needed:
+                            - Change 1
+                            - Change 2
+                            
+                            Updated content:
+                            <complete file content>
+                            
+                            [Filename 2]
+                            ...
+                            """
+                            
+                            # Call the model to generate fixes
+                            model = get_model(state)
+                            messages = [
+                                SystemMessage(content="You are an expert AELF smart contract developer."),
+                                HumanMessage(content=prompt)
+                            ]
+                            ai_response = await model.ainvoke(messages)
+                            
+                            # Store the suggested fixes
+                            internal_state["suggested_fixes"] = ai_response.content
+                            
+                            # Parse the response to extract file updates
+                            response_text = ai_response.content
+                            file_updates = {}
+                            
+                            # Split response by file sections (marked by [Filename])
+                            file_sections = response_text.split("[")[1:]  # Skip first empty section
+                            for section in file_sections:
+                                try:
+                                    # Extract filename and content
+                                    filename = section.split("]")[0].strip()
+                                    content_start = section.find("Updated content:")
+                                    if content_start != -1:
+                                        updated_content = section[content_start + 15:].strip()
+                                        # Store the update
+                                        file_updates[filename] = updated_content
+                                except Exception as e:
+                                    print(f"Error parsing fix response section: {str(e)}")
+                                    continue
+                            
+                            # Apply fixes to all affected files
+                            for filename, new_content in file_updates.items():
+                                # Find the matching output entry
+                                for key, value in output.items():
+                                    if isinstance(value, dict) and "path" in value:
+                                        if os.path.basename(value["path"]) == filename:
+                                            # Update the file content
+                                            output[key]["content"] = new_content
+                                            break
+                            
+                            # Update the state with fixed files
+                            internal_state["output"] = output
+                            
+                            # Continue to next iteration
+                            test_cycle_count += 1
+                            continue
+                            
+                    else:
+                        # Build successful
+                        test_results["passed"] = True
+                        test_results["build_output"] = "Build succeeded"
+                        test_results["dll_output"] = response_text[:100] + "..." if len(response_text) > 100 else response_text
+                        break  # Exit the loop on success
+                else:
+                    # API call failed
+                    test_results["passed"] = False
+                    test_results["build_output"] = f"API call failed: {process.stderr}"
+                    test_results["errors"] = [process.stderr]
+                    break  # Exit the loop on API failure
+            
+        except Exception as e:
+            print(f"Error in test_contract: {str(e)}")
+            print(f"Error traceback: {traceback.format_exc()}")
+            
+            # Update test results with error information
+            test_results["passed"] = False
+            test_results["build_output"] = f"Error during testing: {str(e)}"
+            test_results["errors"] = [str(e)]
+            break  # Exit the loop on exception
+        
+        test_cycle_count += 1
+    
+    # Store final test results in the state
+    internal_state["test_results"] = test_results
+    
+    # Return the final state
+    return {
+        "generate": {
+            "_internal": internal_state
+        }
+    }
+
 def validation_router(state: AgentState) -> str:
     """
     Route to the appropriate next step based on validation results.
@@ -1060,11 +1342,27 @@ def validation_router(state: AgentState) -> str:
     if "fixes" not in internal_state:
         internal_state["fixes"] = ""
     
-    # Allow only one validation cycle
-    return "generate_code" if current_count < 2 else "__end__"
+    # Route to test_contract after successful validation
+    # Store the current validation count for tracking retries
+    internal_state["validation_count"] = current_count + 1
+    
+    if current_count < 2:
+        # If we haven't reached the second validation yet, go back to generate_code
+        return "generate_code"
+    else:
+        # After reaching validation_count of 2, proceed to test_contract
+        # regardless of validation status
+        return "test_contract"
+
+def test_router(state: AgentState) -> str:
+    """
+    Route to end after test_contract completes.
+    The test_contract function handles all iterations internally.
+    """
+    return "__end__"
 
 def create_agent() -> StateGraph:
-    """Create the agent workflow with a linear flow and single validation cycle."""
+    """Create the agent workflow with a linear flow."""
     workflow = StateGraph(AgentState)
     
     # Add nodes
@@ -1072,6 +1370,7 @@ def create_agent() -> StateGraph:
     workflow.add_node("analyze_codebase", analyze_codebase)
     workflow.add_node("generate_code", generate_contract)
     workflow.add_node("validate", validate_contract)
+    workflow.add_node("test_contract", test_contract)
     
     # Set the entry point
     workflow.set_entry_point("analyze")
@@ -1088,9 +1387,13 @@ def create_agent() -> StateGraph:
         validation_router,
         {
             "generate_code": "generate_code",
-            "__end__": END  # Use "__end__" as key and END constant as value
+            "test_contract": "test_contract",
+            "__end__": END
         }
     )
+    
+    # Add edge from test_contract to END
+    workflow.add_edge("test_contract", END)
     
     return workflow.compile()
 
