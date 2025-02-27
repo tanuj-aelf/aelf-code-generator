@@ -31,7 +31,7 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
     try {
       // Create an AbortController with a 5-minute timeout
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000); // 5 minutes
+      const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 5 minutes
 
       const response = await fetch("/api/copilotkit", {
         method: "POST",
@@ -58,7 +58,7 @@ export const useChat = ({ onSuccess, onError }: UseChatProps = {}) => {
         throw new Error(data.error || `HTTP error! status: ${response.status}`);
       }
 
-      if (!data.validate?.generate?._internal?.output) {
+      if (!data.test_contract?.generate?._internal?.output) {
         throw new Error("Invalid response format from agent");
       }
 

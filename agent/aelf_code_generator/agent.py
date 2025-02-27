@@ -1189,7 +1189,7 @@ async def test_contract(state: AgentState) -> Dict:
                         test_results["warnings"] = warning_lines
                         
                         # If we have errors and haven't reached max cycles, try to fix them
-                        if test_cycle_count < max_cycles - 1:
+                        if test_cycle_count < max_cycles:
                             # Prepare prompt for generating fixes
                             error_list = "\n".join(error_lines[:10])  # Limit to first 10 errors
                             
@@ -1348,10 +1348,6 @@ async def test_contract(state: AgentState) -> Dict:
                             response_text = ai_response.content
                             debug_info = []  # Store debug info about the parsing process
                             
-                            # Log the full response for debugging
-                            print(f"DEBUG - Full AI response received, length: {len(response_text)}")
-                            debug_info.append(f"AI response received, length: {len(response_text)}")
-                            
                             # Extract the updated output object
                             updated_output = None
                             match = re.search(r'<UPDATED_OUTPUT>(.*?)</UPDATED_OUTPUT>', response_text, re.DOTALL)
@@ -1360,72 +1356,40 @@ async def test_contract(state: AgentState) -> Dict:
                                 try:
                                     # Extract and parse the JSON
                                     updated_output_str = match.group(1).strip()
-                                    debug_info.append(f"Found <UPDATED_OUTPUT> section, length: {len(updated_output_str)}")
                                     
                                     # Try to parse as JSON
                                     updated_output = json.loads(updated_output_str)
-                                    debug_info.append(f"Successfully parsed JSON output object")
                                     
                                     # Validate the structure
                                     required_keys = ["contract", "state", "proto", "reference", "project"]
                                     missing_keys = [key for key in required_keys if key not in updated_output]
                                     
                                     if missing_keys:
-                                        debug_info.append(f"WARNING: Missing required keys in output: {missing_keys}")
                                         # Try to keep the existing keys that are missing
                                         for key in missing_keys:
                                             if key in output:
                                                 updated_output[key] = output[key]
-                                                debug_info.append(f"Restored missing key {key} from original output")
                                     
                                     # Verify that metadata is present
                                     if "metadata" not in updated_output:
-                                        debug_info.append("WARNING: Missing metadata array in output")
                                         # Restore metadata from original output
                                         if "metadata" in output:
                                             updated_output["metadata"] = output["metadata"]
-                                            debug_info.append("Restored metadata from original output")
                                     
                                     # Update the output with the LLM-generated complete object
                                     output = updated_output
-                                    debug_info.append("Successfully updated output with LLM-generated fixed content")
                                     
                                 except json.JSONDecodeError as e:
-                                    debug_info.append(f"ERROR: Failed to parse JSON: {str(e)}")
                                     # Try basic validation and sanitizing
                                     try:
                                         # Replace any problematic characters and try again
                                         sanitized_str = updated_output_str.replace('\t', '    ').replace('\\n', '\\\\n')
                                         updated_output = json.loads(sanitized_str)
                                         output = updated_output
-                                        debug_info.append("Successfully parsed JSON after sanitizing")
                                     except:
-                                        debug_info.append("Failed to parse JSON even after sanitizing")
-                            else:
-                                debug_info.append("ERROR: Could not find <UPDATED_OUTPUT> section in response")
+                                        pass
                             
-                            # Create update summary
-                            update_summary = []
-                            if updated_output:
-                                update_summary.append("Updated complete output object with LLM-generated fixes")
-                                # Add summary for each component updated
-                                for key in ["contract", "state", "proto", "reference", "project"]:
-                                    if key in updated_output:
-                                        update_summary.append(f"Updated {key} content")
-                                
-                                # Metadata updates
-                                if "metadata" in updated_output and isinstance(updated_output["metadata"], list):
-                                    meta_count = len(updated_output["metadata"])
-                                    update_summary.append(f"Updated {meta_count} metadata files")
-                            else:
-                                update_summary.append("WARNING: No fixes were applied despite LLM suggesting changes")
-                            
-                            # Log update summary
-                            for summary in update_summary:
-                                debug_info.append(f"- {summary}")
-                                print(summary)  # Also print to console for immediate feedback
-                            
-                            # Store debug info in internal state for troubleshooting
+                            # Store debug info in internal state for troubleshooting if needed
                             internal_state["debug_info"] = debug_info
                             
                             # Update the state with fixed files
@@ -1466,7 +1430,14 @@ async def test_contract(state: AgentState) -> Dict:
     # Return the final state
     return {
         "generate": {
-            "_internal": internal_state
+            "_internal": {
+                "output": internal_state.get("output", {}),  # Keep only the essential output
+                "analysis": internal_state.get("analysis", ""),  # Keep analysis for reference
+                "fixes": internal_state.get("fixes", ""),  # Keep fixes information
+                "codebase_insights": internal_state.get("codebase_insights", {}),  # Keep codebase insights
+                "test_results": internal_state.get("test_results", {}),  # Keep test results
+                "validation_results": internal_state.get("validation_result", {})  # Keep validation results
+            }
         }
     }
 

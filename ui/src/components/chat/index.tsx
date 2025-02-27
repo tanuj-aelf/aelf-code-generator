@@ -55,12 +55,12 @@ export const ChatWindow = ({ fullScreen = false }: ChatWindowProps) => {
 
 const extractFiles = (data: AgentResponse): FileContent[] => {
   return [
-    data.validate?.generate._internal.output.contract,
-    data.validate?.generate._internal.output.state,
-    data.validate?.generate._internal.output.proto,
-    data.validate?.generate._internal.output.reference,
-    data.validate?.generate._internal.output.project,
-    ...(data.validate?.generate._internal.output.metadata || []),
+    data.test_contract?.generate._internal.output.contract,
+    data.test_contract?.generate._internal.output.state,
+    data.test_contract?.generate._internal.output.proto,
+    data.test_contract?.generate._internal.output.reference,
+    data.test_contract?.generate._internal.output.project,
+    ...(data.test_contract?.generate._internal.output.metadata || []),
   ]
     .filter((file): file is { path: string; content: string } => Boolean(file?.path && file?.content))
     .map((file) => ({ path: file.path, contents: file.content }));
