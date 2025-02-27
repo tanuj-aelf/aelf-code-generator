@@ -92,6 +92,8 @@ agent/.pytest_cache/
 agent/.coverage
 agent/htmlcov/
 agent/logs/
+agent/aelf_code_generator/logs/
+agent/aelf_code_generator/logs/*.log
 agent/.vscode/
 agent/.idea/
 agent/*.log

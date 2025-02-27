@@ -11,6 +11,7 @@ class CodebaseInsight(TypedDict, total=False):
     project_structure: str
     coding_patterns: str
     implementation_guidelines: str
+    sample_references: str
 
 class CodeFile(TypedDict):
     """
@@ -63,7 +64,8 @@ def get_default_state() -> AgentState:
                 "codebase_insights": {
                     "project_structure": "",
                     "coding_patterns": "",
-                    "implementation_guidelines": ""
+                    "implementation_guidelines": "",
+                    "sample_references": ""
                 },
                 "output": {
                     "contract": empty_code_file,
