@@ -1361,7 +1361,7 @@ async def test_contract(state: AgentState) -> Dict:
                                     updated_output = json.loads(updated_output_str)
                                     
                                     # Validate the structure
-                                    required_keys = ["contract", "state", "proto", "reference", "project"]
+                                    required_keys = ["contract", "state", "proto", "reference", "project", "metadata"]
                                     missing_keys = [key for key in required_keys if key not in updated_output]
                                     
                                     if missing_keys:
@@ -1369,12 +1369,6 @@ async def test_contract(state: AgentState) -> Dict:
                                         for key in missing_keys:
                                             if key in output:
                                                 updated_output[key] = output[key]
-                                    
-                                    # Verify that metadata is present
-                                    if "metadata" not in updated_output:
-                                        # Restore metadata from original output
-                                        if "metadata" in output:
-                                            updated_output["metadata"] = output["metadata"]
                                     
                                     # Update the output with the LLM-generated complete object
                                     output = updated_output
