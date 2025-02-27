@@ -5,6 +5,7 @@ This module defines the main agent workflow for AELF smart contract code generat
 import os
 import traceback
 import re
+import json
 from typing import Dict, List, Any, Annotated, Literal
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
 from langgraph.graph import StateGraph, END
@@ -1041,7 +1042,7 @@ async def test_contract(state: AgentState) -> Dict:
     This function:
     1. Creates a zip file from the generated contract files
     2. Sends the zip to the AELF playground API for build testing
-    3. If build fails, generates and applies fixes
+    3. If build fails, passes errors to LLM to generate fixes
     4. Repeats the process up to 2 times if needed
     
     Args:
@@ -1132,6 +1133,20 @@ async def test_contract(state: AgentState) -> Dict:
                             "content": value["content"]
                         })
                 
+                # Add metadata files (like aelf/options.proto and aelf/core.proto)
+                metadata_files = output.get("metadata", [])
+                for meta_file in metadata_files:
+                    if isinstance(meta_file, dict) and "path" in meta_file and "content" in meta_file:
+                        # Create directory if needed
+                        file_dir = os.path.dirname(meta_file["path"])
+                        if file_dir:
+                            os.makedirs(os.path.join(src_dir, file_dir), exist_ok=True)
+                        
+                        files_to_write.append({
+                            "path": os.path.join(src_dir, meta_file["path"]),
+                            "content": meta_file["content"]
+                        })
+                
                 # Write all files
                 for file_info in files_to_write:
                     with open(file_info["path"], "w") as f:
@@ -1187,16 +1202,66 @@ async def test_contract(state: AgentState) -> Dict:
                             
                             # Collect all files content for context
                             files_context = []
+                            processed_files = set()  # Track already processed files
+                            
+                            # First add regular files from files_to_write
                             for file_info in files_to_write:
+                                file_path = os.path.basename(file_info["path"])
+                                if file_path in processed_files:
+                                    continue  # Skip if already processed
+                                
+                                processed_files.add(file_path)
                                 file_ext = os.path.splitext(file_info["path"])[1]
                                 file_type = file_type_descriptions.get(file_ext, "source file")
                                 files_context.append(f"""
-                                File: {os.path.basename(file_info["path"])} ({file_type})
+                                File: {file_path} ({file_type})
                                 Content:
                                 {file_info["content"]}
                                 """)
                             
+                            # Then add metadata files, but only if not already processed
+                            metadata_files = output.get("metadata", [])
+                            for meta_file in metadata_files:
+                                if isinstance(meta_file, dict) and "path" in meta_file and "content" in meta_file:
+                                    filename = os.path.basename(meta_file["path"])
+                                    if filename in processed_files:
+                                        continue  # Skip if already processed
+                                    
+                                    processed_files.add(filename)
+                                    file_ext = os.path.splitext(meta_file["path"])[1]
+                                    file_type = file_type_descriptions.get(file_ext, "source file")
+                                    files_context.append(f"""
+                                    File: {filename} ({file_type})
+                                    Content:
+                                    {meta_file["content"]}
+                                    """)
+                            
                             files_content = "\n---\n".join(files_context)
+                            
+                            # Prepare the current output structure for the LLM
+                            output_description = {
+                                "contract": {
+                                    "path": output.get("contract", {}).get("path", ""),
+                                    "file_type": output.get("contract", {}).get("file_type", "")
+                                },
+                                "state": {
+                                    "path": output.get("state", {}).get("path", ""),
+                                    "file_type": output.get("state", {}).get("file_type", "")
+                                },
+                                "proto": {
+                                    "path": output.get("proto", {}).get("path", ""),
+                                    "file_type": output.get("proto", {}).get("file_type", "")
+                                },
+                                "reference": {
+                                    "path": output.get("reference", {}).get("path", ""),
+                                    "file_type": output.get("reference", {}).get("file_type", "")
+                                },
+                                "project": {
+                                    "path": output.get("project", {}).get("path", ""),
+                                    "file_type": output.get("project", {}).get("file_type", "")
+                                },
+                                "metadata_paths": [meta.get("path", "") for meta in output.get("metadata", []) if isinstance(meta, dict)]
+                            }
                             
                             prompt = f"""
                             You are an expert AELF smart contract developer. The contract build has failed with the following errors:
@@ -1215,22 +1280,57 @@ async def test_contract(state: AgentState) -> Dict:
                             5. Proto file syntax and compatibility
                             6. Any syntax or compiler errors
                             
-                            For each file that needs fixes, specify:
-                            1. The filename
-                            2. The required changes
-                            3. The complete updated file content
+                            The current output structure is:
+                            ```json
+                            {json.dumps(output_description, indent=2)}
+                            ```
                             
-                            Format your response as:
-                            [Filename 1]
-                            Changes needed:
-                            - Change 1
-                            - Change 2
+                            Instead of describing the changes, I want you to provide the complete updated output object 
+                            that incorporates all necessary fixes. Return your response in the following format:
                             
-                            Updated content:
-                            <complete file content>
+                            <UPDATED_OUTPUT>
+                            {{
+                              "contract": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "state": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "proto": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "reference": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "project": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "metadata": [
+                                {{
+                                  "content": "... complete updated content ...",
+                                  "path": "...",
+                                  "file_type": "..."
+                                }},
+                                ...
+                              ]
+                            }}
+                            </UPDATED_OUTPUT>
                             
-                            [Filename 2]
-                            ...
+                            IMPORTANT: 
+                            1. Include the COMPLETE content for each file, not just the changes.
+                            2. Keep the same file paths and structure, just update the content to fix the build errors.
+                            3. Ensure your response is valid JSON when extracted from the <UPDATED_OUTPUT> tags.
+                            4. Make only the necessary changes to fix the build errors.
                             """
                             
                             # Call the model to generate fixes
@@ -1244,34 +1344,89 @@ async def test_contract(state: AgentState) -> Dict:
                             # Store the suggested fixes
                             internal_state["suggested_fixes"] = ai_response.content
                             
-                            # Parse the response to extract file updates
+                            # Parse the response to extract the updated output object
                             response_text = ai_response.content
-                            file_updates = {}
+                            debug_info = []  # Store debug info about the parsing process
                             
-                            # Split response by file sections (marked by [Filename])
-                            file_sections = response_text.split("[")[1:]  # Skip first empty section
-                            for section in file_sections:
+                            # Log the full response for debugging
+                            print(f"DEBUG - Full AI response received, length: {len(response_text)}")
+                            debug_info.append(f"AI response received, length: {len(response_text)}")
+                            
+                            # Extract the updated output object
+                            updated_output = None
+                            match = re.search(r'<UPDATED_OUTPUT>(.*?)</UPDATED_OUTPUT>', response_text, re.DOTALL)
+                            
+                            if match:
                                 try:
-                                    # Extract filename and content
-                                    filename = section.split("]")[0].strip()
-                                    content_start = section.find("Updated content:")
-                                    if content_start != -1:
-                                        updated_content = section[content_start + 15:].strip()
-                                        # Store the update
-                                        file_updates[filename] = updated_content
-                                except Exception as e:
-                                    print(f"Error parsing fix response section: {str(e)}")
-                                    continue
+                                    # Extract and parse the JSON
+                                    updated_output_str = match.group(1).strip()
+                                    debug_info.append(f"Found <UPDATED_OUTPUT> section, length: {len(updated_output_str)}")
+                                    
+                                    # Try to parse as JSON
+                                    updated_output = json.loads(updated_output_str)
+                                    debug_info.append(f"Successfully parsed JSON output object")
+                                    
+                                    # Validate the structure
+                                    required_keys = ["contract", "state", "proto", "reference", "project"]
+                                    missing_keys = [key for key in required_keys if key not in updated_output]
+                                    
+                                    if missing_keys:
+                                        debug_info.append(f"WARNING: Missing required keys in output: {missing_keys}")
+                                        # Try to keep the existing keys that are missing
+                                        for key in missing_keys:
+                                            if key in output:
+                                                updated_output[key] = output[key]
+                                                debug_info.append(f"Restored missing key {key} from original output")
+                                    
+                                    # Verify that metadata is present
+                                    if "metadata" not in updated_output:
+                                        debug_info.append("WARNING: Missing metadata array in output")
+                                        # Restore metadata from original output
+                                        if "metadata" in output:
+                                            updated_output["metadata"] = output["metadata"]
+                                            debug_info.append("Restored metadata from original output")
+                                    
+                                    # Update the output with the LLM-generated complete object
+                                    output = updated_output
+                                    debug_info.append("Successfully updated output with LLM-generated fixed content")
+                                    
+                                except json.JSONDecodeError as e:
+                                    debug_info.append(f"ERROR: Failed to parse JSON: {str(e)}")
+                                    # Try basic validation and sanitizing
+                                    try:
+                                        # Replace any problematic characters and try again
+                                        sanitized_str = updated_output_str.replace('\t', '    ').replace('\\n', '\\\\n')
+                                        updated_output = json.loads(sanitized_str)
+                                        output = updated_output
+                                        debug_info.append("Successfully parsed JSON after sanitizing")
+                                    except:
+                                        debug_info.append("Failed to parse JSON even after sanitizing")
+                            else:
+                                debug_info.append("ERROR: Could not find <UPDATED_OUTPUT> section in response")
                             
-                            # Apply fixes to all affected files
-                            for filename, new_content in file_updates.items():
-                                # Find the matching output entry
-                                for key, value in output.items():
-                                    if isinstance(value, dict) and "path" in value:
-                                        if os.path.basename(value["path"]) == filename:
-                                            # Update the file content
-                                            output[key]["content"] = new_content
-                                            break
+                            # Create update summary
+                            update_summary = []
+                            if updated_output:
+                                update_summary.append("Updated complete output object with LLM-generated fixes")
+                                # Add summary for each component updated
+                                for key in ["contract", "state", "proto", "reference", "project"]:
+                                    if key in updated_output:
+                                        update_summary.append(f"Updated {key} content")
+                                
+                                # Metadata updates
+                                if "metadata" in updated_output and isinstance(updated_output["metadata"], list):
+                                    meta_count = len(updated_output["metadata"])
+                                    update_summary.append(f"Updated {meta_count} metadata files")
+                            else:
+                                update_summary.append("WARNING: No fixes were applied despite LLM suggesting changes")
+                            
+                            # Log update summary
+                            for summary in update_summary:
+                                debug_info.append(f"- {summary}")
+                                print(summary)  # Also print to console for immediate feedback
+                            
+                            # Store debug info in internal state for troubleshooting
+                            internal_state["debug_info"] = debug_info
                             
                             # Update the state with fixed files
                             internal_state["output"] = output
