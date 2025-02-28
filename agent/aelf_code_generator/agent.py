@@ -5,15 +5,110 @@ This module defines the main agent workflow for AELF smart contract code generat
 import os
 import traceback
 import re
-from typing import Dict, List, Any, Annotated, Literal
+import json
+import glob
+import hashlib
+import logging
+import time
+import random
+from typing import Dict, List, Any, Annotated, Literal, Optional, Tuple, Set
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage, SystemMessage
+from langchain_core.documents import Document
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt.tool_executor import ToolExecutor
 from langgraph.graph.message import add_messages
 from langgraph.types import Command
 from langchain_community.utilities.tavily_search import TavilySearchAPIWrapper
+from langchain_community.vectorstores import FAISS
+from langchain_core.vectorstores import VectorStore
+from langchain_core.embeddings import Embeddings
+from langchain_openai import OpenAIEmbeddings, AzureOpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from aelf_code_generator.model import get_model
 from aelf_code_generator.types import AgentState, ContractOutput, CodebaseInsight, get_default_state
+from datetime import datetime
+from pathlib import Path
+import sys
+import asyncio
+from aelf_code_generator.prompts import (
+    SYSTEM_PROMPT,
+    CODE_GENERATION_PROMPT,
+    CODEBASE_ANALYSIS_PROMPT,
+    UI_GENERATION_PROMPT,
+    TESTING_PROMPT,
+    DOCUMENTATION_PROMPT,
+    ANALYSIS_PROMPT,
+    VALIDATION_PROMPT,
+    PROTO_GENERATION_PROMPT
+)
+from openai import NotFoundError
+
+# Utility function to generate request IDs for tracking
+def get_request_id():
+    """Generate a unique request ID for tracking RAG operations."""
+    return f"req_{int(time.time())}_{random.randint(1000, 9999)}"
+
+# RAG Configuration
+RAG_CONFIG = {
+    "embedding_model": "models/embedding-001",  # Google AI embedding model to use
+    "samples_dir": str(Path(__file__).parent.parent.parent.parent / "aelf-samples"),  # Path to aelf-samples directory
+    "vector_store_dir": str(Path(__file__).parent / "vector_store"),  # Path to store vector database
+    "excluded_dirs": [".git", "bin", "obj", "node_modules", ".idea", ".vs", "packages"],  # Directories to exclude
+    "chunk_size": 1000,                           # Size of code chunks for embedding
+    "chunk_overlap": 200,                         # Overlap between chunks
+    "retrieval_k": 5,                             # Number of samples to retrieve
+    "file_extensions": [".cs", ".proto", ".csproj"] # File extensions to index
+}
+
+# Configure logging
+def setup_logging():
+    """Configure and initialize logging for the RAG system."""
+    log_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - [RAG] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # Create a file handler for persistent logging
+    log_dir = Path(__file__).parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create a log file with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"rag_{timestamp}.log"
+    
+    # Set up file handler
+    file_handler = logging.FileHandler(log_file, mode='a')
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.INFO)
+    
+    # Set up console handler for terminal output
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    # Get the logger and add handlers
+    logger = logging.getLogger('aelf_rag')
+    logger.setLevel(logging.INFO)
+    
+    # Remove existing handlers to avoid duplicates
+    if logger.handlers:
+        for handler in logger.handlers:
+            logger.removeHandler(handler)
+            
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    # Log setup info
+    logger.info(f"Logging initialized to {log_file}")
+    
+    return logger
+
+# Initialize logging
+logging.basicConfig(level=logging.INFO)  # Basic config for other loggers
+logger = setup_logging()  # Enhanced logging for RAG
+
+# After configuration, log the RAG config
+logger.info(f"RAG Config: {RAG_CONFIG}")
 
 # Define the internal state type with annotation for multiple updates
 InternalStateType = Annotated[Dict, "internal"]
@@ -21,169 +116,356 @@ InternalStateType = Annotated[Dict, "internal"]
 # Note: When using gemini-2.0-flash, system messages are converted to human messages
 # This is handled by the ChatGoogleGenerativeAI class with convert_system_message_to_human=True
 
-ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Your task is to analyze the dApp description and provide a detailed analysis.
+# Track RAG data indexing status to avoid reindexing for each run
+_RAG_INDEX_INITIALIZED = False
+_RAG_VECTOR_STORE = None
+_RAG_FILE_CACHE = {}
 
-Analyze the requirements and identify:
-- Contract type and purpose
-- Core features and functionality
-- Required methods and their specifications
-- State variables and storage needs
-- Events and their parameters
-- Access control and security requirements
+def get_embeddings() -> Embeddings:
+    """Get the embeddings model for RAG."""
+    import os
+    
+    logger.info(f"Using embedding model: {RAG_CONFIG['embedding_model']}")
+    
+    # Check embedding model preference (separate from main model)
+    embedding_model_type = os.getenv("EMBEDDING_MODEL", os.getenv("MODEL", "")).lower()
+    
+    # Use Google Gemini if configured
+    if embedding_model_type == "gemini" or embedding_model_type == "google_genai":
+        logger.info("Using Google Gemini for embeddings")
+        google_api_key = os.getenv("GOOGLE_API_KEY")
+        
+        if not google_api_key:
+            raise ValueError("GOOGLE_API_KEY not found but required for Gemini embeddings")
+        
+        try:
+            from langchain_google_genai import GoogleGenerativeAIEmbeddings
+            
+            logger.info("Initializing Google embedding model: models/embedding-001")
+            embeddings = GoogleGenerativeAIEmbeddings(
+                model="models/embedding-001",
+                google_api_key=google_api_key
+            )
+            
+            # Test the embeddings with a simple query
+            embeddings.embed_query("test")
+            logger.info("Successfully connected to Google embedding model")
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error with Google embeddings: {str(e)}")
+            raise ValueError(f"Failed to initialize Google embeddings: {str(e)}")
+    
+    # Check if we're using Azure OpenAI
+    elif embedding_model_type == "azure_openai":
+        logger.info("Using Azure OpenAI for embeddings")
+        azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+        azure_endpoint = os.getenv("AZURE_ENDPOINT", "https://zhife-m5vtfkd0-westus.services.ai.azure.com")
+        azure_api_version = os.getenv("AZURE_API_VERSION", "2024-02-15-preview")
+        
+        # List of common Azure embedding deployment names to try
+        azure_deployment_names = [
+            "text-embedding-ada-002",  # Most common
+            "text-embedding-3-small",  # Newer model
+            "ada",                     # Sometimes used
+            "embedding",               # Generic name
+            "ada-embedding",           # Another variant
+        ]
+        
+        # Try to use the deployment name from env if specified
+        env_deployment = os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
+        if env_deployment and env_deployment not in azure_deployment_names:
+            azure_deployment_names.insert(0, env_deployment)
+        
+        if not azure_api_key:
+            raise ValueError("Azure OpenAI API key not found but required for Azure embeddings")
+        
+        # Try multiple deployment names until one works
+        for deployment in azure_deployment_names:
+            try:
+                logger.info(f"Trying Azure deployment: {deployment}")
+                embeddings = AzureOpenAIEmbeddings(
+                    azure_deployment=deployment,
+                    azure_endpoint=azure_endpoint,
+                    api_version=azure_api_version,
+                    api_key=azure_api_key
+                )
+                # Test the embeddings with a simple query
+                embeddings.embed_query("test")
+                logger.info(f"Successfully connected to Azure embedding model: {deployment}")
+                return embeddings
+            except NotFoundError:
+                logger.warning(f"Azure deployment '{deployment}' not found, trying next option")
+                continue
+            except Exception as e:
+                logger.warning(f"Error with Azure deployment '{deployment}': {str(e)}")
+                continue
+        
+        raise ValueError("All Azure deployment attempts failed")
+    
+    # If we get here, we don't have a valid model type
+    raise ValueError(f"Unsupported model type: {embedding_model_type}. Please set MODEL environment variable to 'gemini' or 'azure_openai'")
 
-Provide a structured analysis that will be used to generate the smart contract code in the next step.
-Do not generate any code in this step, focus only on the analysis."""
+async def initialize_rag_index(force_rebuild: bool = False) -> VectorStore:
+    """
+    Initialize the RAG index for AELF samples
+    """
+    logger.info("Initializing RAG index")
+    start_time = time.time()
+    
+    try:
+        # Get embeddings model based on configuration
+        embed_model = get_embeddings()
+        logger.info(f"Using embedding model: {RAG_CONFIG['embedding_model']}")
+        
+        # Get path to aelf-samples
+        samples_dir = Path(RAG_CONFIG["samples_dir"])
+        vector_store_dir = Path(RAG_CONFIG["vector_store_dir"])
+        
+        # Create vector store directory if it doesn't exist
+        vector_store_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Path to FAISS index
+        index_path = vector_store_dir / "faiss_index"
+        
+        # Check if index already exists
+        if index_path.exists() and not force_rebuild:
+            try:
+                logger.info(f"Loading existing vector store from {index_path}")
+                # Load existing FAISS index
+                vectorstore = FAISS.load_local(
+                    str(index_path),
+                    embed_model,
+                    allow_dangerous_deserialization=True
+                )
+                
+                # Check if index is valid by running a test query
+                test_result = vectorstore.similarity_search("test", k=1)
+                logger.info(f"Vector store loaded successfully, contains {len(vectorstore.index_to_docstore_id)} documents")
+                return vectorstore
+            except Exception as e:
+                logger.warning(f"Error loading existing vector store: {str(e)}")
+                logger.info("Will rebuild vector store")
+                # Continue to rebuild index
+                pass
+                
+        # If we get here, we need to create a new index
+        logger.info(f"Building new vector store from {samples_dir}")
+        
+        # Check if samples directory exists
+        if not samples_dir.exists():
+            logger.error(f"Samples directory not found: {samples_dir}")
+            raise FileNotFoundError(f"Samples directory not found: {samples_dir}")
+            
+        # Count total files to index
+        logger.info("Scanning aelf-samples directory for files to index")
+        total_files = 0
+        for ext in RAG_CONFIG["file_extensions"]:
+            pattern = str(samples_dir / "**" / f"*{ext}")
+            found_files = glob.glob(pattern, recursive=True)
+            total_files += len(found_files)
+        
+        logger.info(f"Found {total_files} total files with extensions {RAG_CONFIG['file_extensions']}")
+        
+        # Create a list of all files to index
+        files_to_index = []
+        for ext in RAG_CONFIG["file_extensions"]:
+            pattern = str(samples_dir / "**" / f"*{ext}")
+            found_files = glob.glob(pattern, recursive=True)
+            
+            for file in found_files:
+                skip = False
+                for excluded in RAG_CONFIG["excluded_dirs"]:
+                    if f"/{excluded}/" in file or file.endswith(f"/{excluded}"):
+                        skip = True
+                        break
+                
+                if not skip:
+                    files_to_index.append(file)
+        
+        logger.info(f"Indexing {len(files_to_index)} files after excluding directories {RAG_CONFIG['excluded_dirs']}")
+        
+        # Load documents
+        documents = []
+        indexed_files = 0
+        
+        for file_path in files_to_index:
+            try:
+                # Read file content
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    
+                # Skip empty files
+                if not content.strip():
+                    continue
+                    
+                # Get relative path for better identification
+                rel_path = os.path.relpath(file_path, str(samples_dir))
+                
+                # Determine project from path
+                project = rel_path.split("/")[0] if "/" in rel_path else "root"
+                
+                # Get file extension for type identification
+                _, ext = os.path.splitext(file_path)
+                
+                # Create metadata
+                metadata = {
+                    "source": rel_path,
+                    "project": project,
+                    "file_type": ext[1:] if ext.startswith(".") else ext  # Remove leading dot
+                }
+                
+                # Add to documents
+                documents.append(Document(page_content=content, metadata=metadata))
+                indexed_files += 1
+                
+                # Log progress periodically
+                if indexed_files % 50 == 0:
+                    logger.info(f"Indexed {indexed_files}/{len(files_to_index)} files...")
+                
+            except Exception as e:
+                logger.error(f"Error loading file {file_path}: {str(e)}")
+                continue
+                
+        if not documents:
+            logger.error("No documents found to index")
+            raise ValueError("No documents found to index")
+            
+        logger.info(f"Successfully loaded {len(documents)} documents")
+        
+        # Create text splitter for code
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=RAG_CONFIG["chunk_size"],
+            chunk_overlap=RAG_CONFIG["chunk_overlap"],
+            separators=["\n\n", "\n", " ", ""]
+        )
+        
+        # Split documents into chunks
+        logger.info(f"Splitting documents into chunks (size={RAG_CONFIG['chunk_size']}, overlap={RAG_CONFIG['chunk_overlap']})")
+        splits = text_splitter.split_documents(documents)
+        logger.info(f"Created {len(splits)} chunks from {len(documents)} documents")
+        
+        # Create FAISS index
+        logger.info("Creating FAISS index from chunks")
+        vectorstore = FAISS.from_documents(splits, embed_model)
+        
+        # Save index
+        logger.info(f"Saving vector store to {index_path}")
+        vectorstore.save_local(str(index_path))
+        
+        total_time = time.time() - start_time
+        logger.info(f"RAG index initialization completed in {total_time:.2f} seconds")
+        
+        return vectorstore
+        
+    except Exception as e:
+        logger.error(f"Error initializing RAG index: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
-CODEBASE_ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and sample codebase insights, analyze and extract best practices and patterns.
+async def retrieve_relevant_samples(query: str, 
+                                   contract_type: Optional[str] = None, 
+                                   k: int = RAG_CONFIG["retrieval_k"]) -> List[Dict]:
+    """
+    Retrieve relevant code samples from the vector store
+    """
+    if k is None:
+        k = RAG_CONFIG["retrieval_k"]
+        
+    try:
+        logger.info(f"Retrieving samples for query: '{query}' (contract_type={contract_type}, k={k})")
+        start_time = time.time()
+        
+        # Initialize vector store
+        vectorstore = await initialize_rag_index()
+        
+        # Create a composite query by combining the query with contract type
+        search_query = query
+        if contract_type:
+            search_query = f"{contract_type}: {query}"
+            
+        logger.info(f"Using search query: '{search_query}'")
+        
+        # Search for relevant documents
+        docs = vectorstore.similarity_search(search_query, k=k)
+        
+        # Format results as samples
+        samples = []
+        for doc in docs:
+            metadata = doc.metadata
+            samples.append({
+                "content": doc.page_content,
+                "source": metadata.get("source", "unknown"),
+                "project": metadata.get("project", "unknown"),
+                "file_type": metadata.get("file_type", "unknown")
+            })
+            
+        retrieval_time = time.time() - start_time
+        logger.info(f"Retrieved {len(samples)} samples in {retrieval_time:.2f} seconds")
+        
+        # Log some details about the retrieved samples
+        if samples:
+            sample_info = "\n".join([f"- {s['source']} ({s['project']})" for s in samples[:3]])
+            logger.info(f"Top sample sources:\n{sample_info}")
+        
+        return samples
+        
+    except Exception as e:
+        logger.error(f"Error retrieving samples: {str(e)}")
+        logger.error(traceback.format_exc())
+        return []
 
-Focus on:
-1. Project structure and organization
-2. Common coding patterns in AELF smart contracts
-3. Implementation guidelines specific to the requirements
-4. Relevant sample contracts that can be used as reference
-
-Provide structured insights that will guide the code generation process."""
-
-CODE_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Based on the provided analysis and codebase insights, generate a complete smart contract implementation following AELF's standard project structure.
-
-Follow these implementation guidelines:
-{implementation_guidelines}
-
-Common coding patterns to use:
-{coding_patterns}
-
-Project structure to follow:
-{project_structure}
-
-Generate the following files with proper implementations:
-
-1. Main Contract File (src/ContractName.cs):
-- Inherit from ContractNameContainer.ContractNameBase
-- Implement all contract methods
-- Use proper state management
-- Include XML documentation
-- Add proper access control
-- Include input validation
-- Emit events for state changes
-
-2. State Class File (src/ContractState.cs):
-- Define all state variables using proper AELF state types
-- Use MappedState for collections
-- Use SingletonState for single values
-- Include XML documentation
-
-3. Proto File (src/Protobuf/contract/contract_name.proto):
-- Define all messages and services
-- Use proper protobuf types
-- Include method definitions
-- Define events
-- Add proper comments
-
-4. Reference Contract File (src/ContractReference.cs):
-- Define contract reference state
-- Include necessary contract references
-- Add helper methods
-
-5. Project File (ContractName.csproj):
-- Include necessary AELF package references
-- Set proper SDK version
-- Configure protobuf generation
-
-Format each file in a separate code block with proper file path comment:
-```csharp
-// src/ContractName.cs
-... contract implementation ...
-```
-
-```csharp
-// src/ContractState.cs
-... state class implementation ...
-```
-
-```protobuf
-// src/Protobuf/contract/contract_name.proto
-... proto definitions ...
-```
-
-```csharp
-// src/ContractReference.cs
-... contract references ...
-```
-
-```xml
-// ContractName.csproj
-... project configuration ...
-```
-
-Ensure all files follow AELF conventions and best practices."""
-
-VALIDATION_PROMPT = """You are an expert AELF smart contract validator. Your task is to validate the generated smart contract code and identify potential issues before compilation.
-
-Focus on these critical areas:
-
-1. Protobuf Validation:
-- Check for required AELF imports (aelf/options.proto)
-- Verify correct namespace declarations
-- Validate event message definitions
-- Check service method signatures
-- Verify proper use of repeated fields in messages
-
-2. State Management:
-- Verify state class naming consistency
-- Check proper use of AELF state types (MappedState, SingletonState)
-- Validate collection initialization patterns
-- Verify state access patterns
-- Check for proper state updates
-
-3. Contract Implementation:
-- Verify base class inheritance
-- Check method implementations against protobuf definitions
-- Validate event emission patterns
-- Verify access control implementation
-- Check pause mechanism implementation
-- Ensure proper error handling
-- Verify input validation
-
-4. Security Checks:
-- Verify input validation completeness
-- Check state modification guards
-- Validate owner-only functions
-- Check for proper event emissions
-- Verify authorization checks
-- Check for reentrancy protection
-
-5. Best Practices:
-- Verify XML documentation completeness
-- Check naming conventions
-- Validate method visibility
-- Check for code organization
-- Verify error message clarity
-
-Provide specific issues found and suggest fixes. If no issues are found, explicitly state "No issues found"."""
-
-PROTO_GENERATION_PROMPT = """You are an expert AELF smart contract developer. Your task is to generate the content for an AELF-specific proto file.
-
-Generate ONLY the content of the requested proto file. Do not include any explanations or markdown. The output should be valid proto syntax that can be directly saved to a file.
-
-Proto file to generate: {proto_file_path}
-
-For AELF proto files, follow these important guidelines:
-1. Use the correct package name
-2. Include proper csharp_namespace
-3. Add comments explaining the purpose of each message, enum, or extension
-4. Follow AELF's established structure and conventions for this file type
-5. Include ALL required fields, options, and imports
-6. Use correct field numbers for extensions
-
-Example structure for aelf/options.proto:
-- Extension for MethodOptions (is_view)
-- Extended options for message fields (is_identity, behaves_like_collection, struct_type)
-- Options for generating event code (csharp_namespace, base, controller)
-
-Example structure for aelf/core.proto:
-- Basic AELF types like Address, Hash
-- Merkle path related structures
-"""
+def format_code_samples_for_prompt(samples: List[Dict]) -> str:
+    """
+    Format code samples for inclusion in a prompt.
+    
+    Args:
+        samples: List of sample dictionaries returned by retrieve_relevant_samples
+        
+    Returns:
+        Formatted string with code samples for prompt inclusion
+    """
+    if not samples:
+        logger.info("No samples to format")
+        return "No relevant code samples found."
+        
+    logger.info(f"Formatting {len(samples)} code samples for prompt")
+    
+    # Group samples by project
+    samples_by_project = {}
+    for sample in samples:
+        project = sample.get("project", "unknown")
+        if project not in samples_by_project:
+            samples_by_project[project] = []
+        samples_by_project[project].append(sample)
+        
+    # Format samples
+    formatted_samples = []
+    
+    for project, project_samples in samples_by_project.items():
+        # Add project header
+        formatted_samples.append(f"## Project: {project}")
+        
+        # Add samples from this project
+        for i, sample in enumerate(project_samples):
+            source = sample.get("source", "unknown")
+            file_type = sample.get("file_type", "unknown")
+            content = sample.get("content", "")
+            
+            # Truncate content if too long (limit to ~3000 chars)
+            if len(content) > 3000:
+                content = content[:3000] + "\n...(truncated)..."
+                
+            # Format sample
+            formatted_sample = f"### Sample {i+1}: {source}\nType: {file_type}\n```\n{content}\n```\n"
+            formatted_samples.append(formatted_sample)
+            
+    # Join all formatted samples
+    result = "\n".join(formatted_samples)
+    
+    # Log stats about the formatted output
+    logger.info(f"Formatted {len(samples)} samples from {len(samples_by_project)} projects, total length: {len(result)} chars")
+    
+    return result
 
 async def generate_proto_file_content(model, proto_file_path: str) -> str:
     """Generate content for an AELF-specific proto file using the LLM."""
@@ -316,21 +598,143 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate_code"
         internal_state = state["generate"]["_internal"]
         analysis = internal_state.get("analysis", "")
         
+        logger.info("Starting codebase analysis with RAG")
+        request_id = get_request_id()
+        logger.info(f"Request ID: {request_id}")
+        
         if not analysis:
+            logger.warning("No analysis provided, using generic implementation")
             analysis = "No analysis provided. Proceeding with generic AELF contract implementation."
             internal_state["analysis"] = analysis
+        
+        # Extract contract type from analysis for better targeting
+        contract_types = []
+        contract_type = None
+        
+        # Log a summary of the analysis for debugging
+        analysis_summary = analysis[:200] + "..." if len(analysis) > 200 else analysis
+        logger.info(f"Analysis summary: {analysis_summary}")
+        
+        # Look for contract type mentions in the analysis
+        contract_type_keywords = {
+            "lottery": "lottery game",
+            "voting": "voting contract",
+            "dao": "dao contract",
+            "token": "token contract",
+            "nft": "nft contract",
+            "staking": "staking contract",
+            "game": "game contract",
+            "expense": "expense tracker",
+            "auction": "auction contract",
+            "allowance": "allowance contract"
+        }
+        
+        analysis_lower = analysis.lower()
+        for keyword, type_name in contract_type_keywords.items():
+            if keyword in analysis_lower:
+                contract_types.append(type_name)
+        
+        if contract_types:
+            # Use the first identified contract type for retrieval
+            contract_type = contract_types[0]
+            logger.info(f"[{request_id}] Identified contract type: {contract_type}")
+        else:
+            logger.info(f"[{request_id}] No specific contract type identified")
+        
+        # Generate queries based on analysis
+        queries = []
+        
+        # Create targeted queries based on analysis keywords and content
+        if "state" in analysis_lower and "variable" in analysis_lower:
+            queries.append("state variables and storage")
+            
+        if "method" in analysis_lower or "function" in analysis_lower:
+            queries.append("contract methods and functions")
+            
+        if "event" in analysis_lower:
+            queries.append("contract events")
+            
+        if "access" in analysis_lower or "owner" in analysis_lower or "permission" in analysis_lower:
+            queries.append("access control and permissions")
+        
+        # Add a general query based on contract type
+        if contract_type:
+            queries.append(f"{contract_type} implementation")
+        else:
+            # If no specific type was identified, use a generic query
+            queries.append("AELF smart contract implementation")
+            
+        # Create a targeted query from the first paragraph of analysis
+        first_paragraph = analysis.split("\n\n")[0] if "\n\n" in analysis else analysis.split("\n")[0]
+        if len(first_paragraph) > 30:  # Ensure it's substantial enough
+            queries.append(first_paragraph[:200])  # Limit length
+            
+        logger.info(f"[{request_id}] Generated {len(queries)} queries for RAG retrieval: {queries}")
         
         # Get model to analyze requirements
         model = get_model(state)
         
+        # Retrieve relevant code samples from aelf-samples
+        all_samples = []
+        logger.info(f"[{request_id}] Starting sample retrieval process")
+        start_time = time.time()
+        
+        for i, query in enumerate(queries):
+            try:
+                logger.info(f"[{request_id}] Processing query {i+1}/{len(queries)}: '{query}'")
+                samples = await retrieve_relevant_samples(query, contract_type)
+                
+                # Only add new samples that aren't duplicates
+                seen_sources = {s["source"] for s in all_samples}
+                new_samples = 0
+                
+                for sample in samples:
+                    if sample["source"] not in seen_sources:
+                        all_samples.append(sample)
+                        seen_sources.add(sample["source"])
+                        new_samples += 1
+                
+                logger.info(f"[{request_id}] Added {new_samples} new samples from query {i+1}")
+                
+                # Limit total samples to prevent token overflow
+                if len(all_samples) >= RAG_CONFIG["retrieval_k"] * 2:
+                    logger.info(f"[{request_id}] Reached sample limit ({len(all_samples)}), stopping retrieval")
+                    break
+            except Exception as e:
+                logger.error(f"[{request_id}] Error retrieving samples for query '{query}': {str(e)}")
+                # Continue with other queries even if one fails
+                continue
+                
+        retrieval_time = time.time() - start_time
+        logger.info(f"[{request_id}] Retrieved {len(all_samples)} total samples in {retrieval_time:.2f} seconds")
+        
+        # Log sample sources for debugging
+        sample_sources = [f"{s['source']} ({s['project']})" for s in all_samples[:5]]
+        logger.info(f"[{request_id}] Top samples: {sample_sources}")
+                
+        # Format samples for prompt inclusion
+        formatted_samples = format_code_samples_for_prompt(all_samples)
+        
+        # Store retrieved samples in internal state
+        logger.info(f"[{request_id}] Storing {len(all_samples)} samples in internal state")
+        internal_state["retrieved_samples"] = [{
+            "source": sample["source"],
+            "project": sample["project"],
+            "file_type": sample["file_type"]
+        } for sample in all_samples]
+        
         # Generate codebase insights with improved prompt
+        logger.info(f"[{request_id}] Generating codebase insights with LLM")
         messages = [
             SystemMessage(content=CODEBASE_ANALYSIS_PROMPT),
             HumanMessage(content=f"""
-Based on the following contract requirements, provide implementation insights and patterns for an AELF smart contract.
+Based on the following contract requirements and the provided code samples from the aelf-samples repository, provide implementation insights and patterns for an AELF smart contract.
 
 Contract Requirements:
 {analysis}
+
+Retrieved Code Samples:
+{formatted_samples}
 
 Please provide structured insights focusing on:
 
@@ -362,11 +766,22 @@ Your insights will guide the code generation process.""")
         ]
         
         try:
+            logger.info(f"[{request_id}] Invoking LLM for codebase analysis")
+            start_time = time.time()
+            
             response = await model.ainvoke(messages, timeout=150)
             insights = response.content.strip()
             
+            analysis_time = time.time() - start_time
+            logger.info(f"[{request_id}] LLM analysis completed in {analysis_time:.2f} seconds")
+            
             if not insights:
+                logger.error(f"[{request_id}] Codebase analysis failed - empty response")
                 raise ValueError("Codebase analysis failed - empty response")
+                
+            # Log a summary of the insights
+            insights_summary = insights[:200] + "..." if len(insights) > 200 else insights
+            logger.info(f"[{request_id}] Insights summary: {insights_summary}")
                 
             # Split insights into sections
             sections = insights.split("\n\n")
@@ -397,6 +812,7 @@ Your insights will guide the code generation process.""")
             
             # Ensure we have content for each section
             if not project_structure:
+                logger.warning(f"[{request_id}] No project structure section found, using default")
                 project_structure = """Standard AELF project structure:
 1. Main Contract Implementation (ContractName.cs)
    - Inherits from ContractBase
@@ -419,6 +835,7 @@ Your insights will guide the code generation process.""")
    - Helper methods"""
 
             if not coding_patterns:
+                logger.warning(f"[{request_id}] No coding patterns section found, using default")
                 coding_patterns = """Common AELF patterns:
 1. State Management
    - MapState for collections
@@ -457,8 +874,20 @@ Your insights will guide the code generation process.""")
                 "implementation_guidelines": implementation_guidelines
             }
             
+            # Store sample insights in the dictionary
+            if all_samples:
+                sample_insights = "\n\n".join([
+                    f"- {sample['source']} (from {sample['project']} project)" 
+                    for sample in all_samples[:5]  # Limit to top 5 samples
+                ])
+                insights_dict["sample_references"] = f"""Referenced Samples:
+{sample_insights}"""
+                logger.info(f"[{request_id}] Added {len(all_samples[:5])} sample references to insights")
+            
             # Update internal state with insights
             internal_state["codebase_insights"] = insights_dict
+            
+            logger.info(f"[{request_id}] Codebase analysis with RAG completed successfully")
             
             # Return command to move to next state
             return Command(
@@ -471,12 +900,13 @@ Your insights will guide the code generation process.""")
             )
                 
         except Exception as e:
-            print(f"Error analyzing codebase insights: {str(e)}")
+            logger.error(f"[{request_id}] Error analyzing codebase insights: {str(e)}")
+            logger.error(f"[{request_id}] Error traceback: {traceback.format_exc()}")
             raise
             
     except Exception as e:
-        print(f"Error in analyze_codebase: {str(e)}")
-        print(f"Error traceback: {traceback.format_exc()}")
+        logger.error(f"Error in analyze_codebase: {str(e)}")
+        logger.error(f"Error traceback: {traceback.format_exc()}")
         
         # Initialize internal state if it doesn't exist
         if "generate" not in state or "_internal" not in state["generate"]:
@@ -506,6 +936,8 @@ Your insights will guide the code generation process.""")
 6. Follow proper error handling patterns
 7. Add XML documentation for all public members"""
         }
+        
+        logger.info("Using fallback insights due to error")
         
         # Return command to continue to generate even if codebase analysis fails
         return Command(
@@ -539,26 +971,46 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
             insights = {
                 "project_structure": "Standard AELF project structure",
                 "coding_patterns": "Common AELF patterns",
-                "implementation_guidelines": "Follow AELF best practices"
+                "implementation_guidelines": "Follow AELF best practices",
+                "sample_references": ""
             }
             internal_state["codebase_insights"] = insights
         
         # Get model with state
         model = get_model(state)
         
-        # Generate code based on analysis and insights
+        # Prepare RAG context from codebase insights
+        rag_context = f"""
+# AELF Project Structure
+{insights.get("project_structure", "")}
+
+# AELF Coding Patterns
+{insights.get("coding_patterns", "")}
+
+# AELF Implementation Guidelines
+{insights.get("implementation_guidelines", "")}
+
+# AELF Code Sample References
+{insights.get("sample_references", "")}
+
+# Previous Validation Issues and Fixes
+{fixes}
+"""
+        
+        # Generate code based on analysis and insights with RAG context
         messages = [
             SystemMessage(content=CODE_GENERATION_PROMPT.format(
                 implementation_guidelines=insights.get("implementation_guidelines", ""),
                 coding_patterns=insights.get("coding_patterns", ""),
-                project_structure=insights.get("project_structure", "")
+                project_structure=insights.get("project_structure", ""),
+                sample_references=insights.get("sample_references", "")
             )),
             HumanMessage(content=f"""
 Analysis:
 {analysis}
 
-Previous Validation Issues and Fixes:
-{fixes}
+RAG Context:
+{rag_context}
 
 Please generate the complete smart contract implementation following AELF's project structure.
 {f"This is iteration {validation_count + 1} of the code generation. Please incorporate the fixes suggested in the previous validation." if validation_count > 0 else ""}
@@ -861,7 +1313,7 @@ Please generate the complete smart contract implementation following AELF's proj
             "analysis": error_msg
         }
         
-        # Return error state
+        # Return command to continue to next state
         return Command(
             goto="__end__",
             update={
@@ -1033,6 +1485,407 @@ For each issue found, provide specific suggestions on how to fix it. If no issue
             }
         }
 
+async def test_contract(state: AgentState) -> Dict:
+    """
+    Test the generated contract by sending it to the AELF playground API.
+    Handles build testing and code fixes internally for up to 2 iterations.
+    
+    This function:
+    1. Creates a zip file from the generated contract files
+    2. Sends the zip to the AELF playground API for build testing
+    3. If build fails, passes errors to LLM to generate fixes
+    4. Repeats the process up to 2 times if needed
+    
+    Args:
+        state: The current state of the agent workflow
+        
+    Returns:
+        A dictionary containing test results and any identified issues
+    """
+    import os
+    import zipfile
+    import json
+    import tempfile
+    import subprocess
+    import base64
+    
+    # Initialize internal state if not present
+    if "generate" not in state:
+        state["generate"] = {}
+    if "_internal" not in state["generate"]:
+        state["generate"]["_internal"] = {}
+    
+    internal_state = state["generate"]["_internal"]
+    
+    # Get or initialize the test cycle count
+    test_cycle_count = internal_state.get("test_cycle_count", 0)
+    max_cycles = 2
+    
+    while test_cycle_count < max_cycles:
+        internal_state["test_cycle_count"] = test_cycle_count + 1
+        
+        # Initialize test results for this iteration
+        test_results = {
+            "passed": False,
+            "build_output": "",
+            "errors": [],
+            "warnings": [],
+            "dll_output": "",
+            "test_cycle": test_cycle_count + 1
+        }
+        
+        try:
+            # Get the output from the state
+            output = internal_state.get("output", {})
+            
+            # Create a temporary directory to store the files
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Create src directory
+                src_dir = os.path.join(temp_dir, "src")
+                os.makedirs(src_dir, exist_ok=True)
+                
+                # Extract contract, state and proto files from output
+                files_to_write = []
+                
+                if "contract" in output and "content" in output["contract"]:
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, os.path.basename(output["contract"].get("path", "Contract.cs"))),
+                        "content": output["contract"]["content"]
+                    })
+                
+                if "state" in output and "content" in output["state"]:
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, os.path.basename(output["state"].get("path", "ContractState.cs"))),
+                        "content": output["state"]["content"]
+                    })
+                
+                if "proto" in output and "content" in output["proto"]:
+                    # Create protobuf directory if it exists in the path
+                    proto_path = output["proto"].get("path", "Protobuf/contract.proto")
+                    proto_dir = os.path.dirname(proto_path)
+                    if proto_dir:
+                        os.makedirs(os.path.join(src_dir, proto_dir), exist_ok=True)
+                    
+                    files_to_write.append({
+                        "path": os.path.join(src_dir, proto_path),
+                        "content": output["proto"]["content"]
+                    })
+                
+                # Add any additional files from output
+                for key, value in output.items():
+                    if key not in ["contract", "state", "proto"] and isinstance(value, dict) and "content" in value and "path" in value:
+                        # Create directory if needed
+                        file_dir = os.path.dirname(value["path"])
+                        if file_dir:
+                            os.makedirs(os.path.join(src_dir, file_dir), exist_ok=True)
+                        
+                        files_to_write.append({
+                            "path": os.path.join(src_dir, value["path"]),
+                            "content": value["content"]
+                        })
+                
+                # Add metadata files (like aelf/options.proto and aelf/core.proto)
+                metadata_files = output.get("metadata", [])
+                for meta_file in metadata_files:
+                    if isinstance(meta_file, dict) and "path" in meta_file and "content" in meta_file:
+                        # Create directory if needed
+                        file_dir = os.path.dirname(meta_file["path"])
+                        if file_dir:
+                            os.makedirs(os.path.join(src_dir, file_dir), exist_ok=True)
+                        
+                        files_to_write.append({
+                            "path": os.path.join(src_dir, meta_file["path"]),
+                            "content": meta_file["content"]
+                        })
+                
+                # Write all files
+                for file_info in files_to_write:
+                    with open(file_info["path"], "w") as f:
+                        f.write(file_info["content"])
+                
+                # Create the zip file
+                zip_path = os.path.join(temp_dir, "src.zip")
+                with zipfile.ZipFile(zip_path, "w") as zipf:
+                    for root, _, files in os.walk(src_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            arcname = os.path.relpath(file_path, temp_dir)
+                            zipf.write(file_path, arcname)
+                
+                # Send the zip file to the AELF playground API
+                curl_cmd = [
+                    "curl", "--location", "https://playground.aelf.com/playground/build",
+                    "--form", f'contractFiles=@"{zip_path}"'
+                ]
+                
+                # Execute the curl command
+                process = subprocess.run(curl_cmd, capture_output=True, text=True)
+                
+                # Process the API response
+                if process.returncode == 0:
+                    response_text = process.stdout
+                    
+                    # Check if the response indicates build success (contains base64 DLL)
+                    if not response_text.strip().startswith("TV") and "error" in response_text.lower():
+                        # Build failed - extract error messages
+                        test_results["passed"] = False
+                        test_results["build_output"] = response_text
+                        
+                        # Parse error messages
+                        error_lines = [line for line in response_text.split('\n') if "error" in line.lower()]
+                        test_results["errors"] = error_lines
+                        
+                        # Parse warning messages
+                        warning_lines = [line for line in response_text.split('\n') if "warning" in line.lower()]
+                        test_results["warnings"] = warning_lines
+                        
+                        # If we have errors and haven't reached max cycles, try to fix them
+                        if test_cycle_count < max_cycles:
+                            # Prepare prompt for generating fixes
+                            error_list = "\n".join(error_lines[:10])  # Limit to first 10 errors
+                            
+                            # Create a map of file extensions to their descriptions
+                            file_type_descriptions = {
+                                ".cs": "C# source code file",
+                                ".csproj": "C# project file",
+                                ".proto": "Protocol Buffer definition file"
+                            }
+                            
+                            # Collect all files content for context
+                            files_context = []
+                            processed_files = set()  # Track already processed files
+                            
+                            # First add regular files from files_to_write
+                            for file_info in files_to_write:
+                                file_path = os.path.basename(file_info["path"])
+                                if file_path in processed_files:
+                                    continue  # Skip if already processed
+                                
+                                processed_files.add(file_path)
+                                file_ext = os.path.splitext(file_info["path"])[1]
+                                file_type = file_type_descriptions.get(file_ext, "source file")
+                                files_context.append(f"""
+                                File: {file_path} ({file_type})
+                                Content:
+                                {file_info["content"]}
+                                """)
+                            
+                            # Then add metadata files, but only if not already processed
+                            metadata_files = output.get("metadata", [])
+                            for meta_file in metadata_files:
+                                if isinstance(meta_file, dict) and "path" in meta_file and "content" in meta_file:
+                                    filename = os.path.basename(meta_file["path"])
+                                    if filename in processed_files:
+                                        continue  # Skip if already processed
+                                    
+                                    processed_files.add(filename)
+                                    file_ext = os.path.splitext(meta_file["path"])[1]
+                                    file_type = file_type_descriptions.get(file_ext, "source file")
+                                    files_context.append(f"""
+                                    File: {filename} ({file_type})
+                                    Content:
+                                    {meta_file["content"]}
+                                    """)
+                            
+                            files_content = "\n---\n".join(files_context)
+                            
+                            # Prepare the current output structure for the LLM
+                            output_description = {
+                                "contract": {
+                                    "path": output.get("contract", {}).get("path", ""),
+                                    "file_type": output.get("contract", {}).get("file_type", "")
+                                },
+                                "state": {
+                                    "path": output.get("state", {}).get("path", ""),
+                                    "file_type": output.get("state", {}).get("file_type", "")
+                                },
+                                "proto": {
+                                    "path": output.get("proto", {}).get("path", ""),
+                                    "file_type": output.get("proto", {}).get("file_type", "")
+                                },
+                                "reference": {
+                                    "path": output.get("reference", {}).get("path", ""),
+                                    "file_type": output.get("reference", {}).get("file_type", "")
+                                },
+                                "project": {
+                                    "path": output.get("project", {}).get("path", ""),
+                                    "file_type": output.get("project", {}).get("file_type", "")
+                                },
+                                "metadata_paths": [meta.get("path", "") for meta in output.get("metadata", []) if isinstance(meta, dict)]
+                            }
+                            
+                            prompt = f"""
+                            You are an expert AELF smart contract developer. The contract build has failed with the following errors:
+                            
+                            {error_list}
+                            
+                            Here are all the current contract files:
+                            
+                            {files_content}
+                            
+                            Please analyze these errors and generate fixes for the code. Focus on:
+                            1. Missing or incorrect imports/using statements
+                            2. Class inheritance and type issues
+                            3. Static vs instance member declarations
+                            4. Project file configuration issues
+                            5. Proto file syntax and compatibility
+                            6. Any syntax or compiler errors
+                            
+                            The current output structure is:
+                            ```json
+                            {json.dumps(output_description, indent=2)}
+                            ```
+                            
+                            Instead of describing the changes, I want you to provide the complete updated output object 
+                            that incorporates all necessary fixes. Return your response in the following format:
+                            
+                            <UPDATED_OUTPUT>
+                            {{
+                              "contract": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "state": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "proto": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "reference": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "project": {{
+                                "content": "... complete updated content ...",
+                                "path": "...",
+                                "file_type": "..."
+                              }},
+                              "metadata": [
+                                {{
+                                  "content": "... complete updated content ...",
+                                  "path": "...",
+                                  "file_type": "..."
+                                }},
+                                ...
+                              ]
+                            }}
+                            </UPDATED_OUTPUT>
+                            
+                            IMPORTANT: 
+                            1. Include the COMPLETE content for each file, not just the changes.
+                            2. Keep the same file paths and structure, just update the content to fix the build errors.
+                            3. Ensure your response is valid JSON when extracted from the <UPDATED_OUTPUT> tags.
+                            4. Make only the necessary changes to fix the build errors.
+                            """
+                            
+                            # Call the model to generate fixes
+                            model = get_model(state)
+                            messages = [
+                                SystemMessage(content="You are an expert AELF smart contract developer."),
+                                HumanMessage(content=prompt)
+                            ]
+                            ai_response = await model.ainvoke(messages)
+                            
+                            # Store the suggested fixes
+                            internal_state["suggested_fixes"] = ai_response.content
+                            
+                            # Parse the response to extract the updated output object
+                            response_text = ai_response.content
+                            debug_info = []  # Store debug info about the parsing process
+                            
+                            # Extract the updated output object
+                            updated_output = None
+                            match = re.search(r'<UPDATED_OUTPUT>(.*?)</UPDATED_OUTPUT>', response_text, re.DOTALL)
+                            
+                            if match:
+                                try:
+                                    # Extract and parse the JSON
+                                    updated_output_str = match.group(1).strip()
+                                    
+                                    # Try to parse as JSON
+                                    updated_output = json.loads(updated_output_str)
+                                    
+                                    # Validate the structure
+                                    required_keys = ["contract", "state", "proto", "reference", "project", "metadata"]
+                                    missing_keys = [key for key in required_keys if key not in updated_output]
+                                    
+                                    if missing_keys:
+                                        # Try to keep the existing keys that are missing
+                                        for key in missing_keys:
+                                            if key in output:
+                                                updated_output[key] = output[key]
+                                    
+                                    # Update the output with the LLM-generated complete object
+                                    output = updated_output
+                                    
+                                except json.JSONDecodeError as e:
+                                    # Try basic validation and sanitizing
+                                    try:
+                                        # Replace any problematic characters and try again
+                                        sanitized_str = updated_output_str.replace('\t', '    ').replace('\\n', '\\\\n')
+                                        updated_output = json.loads(sanitized_str)
+                                        output = updated_output
+                                    except:
+                                        pass
+                            
+                            # Store debug info in internal state for troubleshooting if needed
+                            internal_state["debug_info"] = debug_info
+                            
+                            # Update the state with fixed files
+                            internal_state["output"] = output
+                            
+                            # Continue to next iteration
+                            test_cycle_count += 1
+                            continue
+                            
+                    else:
+                        # Build successful
+                        test_results["passed"] = True
+                        test_results["build_output"] = "Build succeeded"
+                        test_results["dll_output"] = response_text[:100] + "..." if len(response_text) > 100 else response_text
+                        break  # Exit the loop on success
+                else:
+                    # API call failed
+                    test_results["passed"] = False
+                    test_results["build_output"] = f"API call failed: {process.stderr}"
+                    test_results["errors"] = [process.stderr]
+                    break  # Exit the loop on API failure
+            
+        except Exception as e:
+            print(f"Error in test_contract: {str(e)}")
+            print(f"Error traceback: {traceback.format_exc()}")
+            
+            # Update test results with error information
+            test_results["passed"] = False
+            test_results["build_output"] = f"Error during testing: {str(e)}"
+            test_results["errors"] = [str(e)]
+            break  # Exit the loop on exception
+        
+        test_cycle_count += 1
+    
+    # Store final test results in the state
+    internal_state["test_results"] = test_results
+    
+    # Return the final state
+    return {
+        "generate": {
+            "_internal": {
+                "output": internal_state.get("output", {}),  # Keep only the essential output
+                "analysis": internal_state.get("analysis", ""),  # Keep analysis for reference
+                "fixes": internal_state.get("fixes", ""),  # Keep fixes information
+                "codebase_insights": internal_state.get("codebase_insights", {}),  # Keep codebase insights
+                "test_results": internal_state.get("test_results", {}),  # Keep test results
+                "validation_results": internal_state.get("validation_result", {})  # Keep validation results
+            }
+        }
+    }
+
 def validation_router(state: AgentState) -> str:
     """
     Route to the appropriate next step based on validation results.
@@ -1060,11 +1913,27 @@ def validation_router(state: AgentState) -> str:
     if "fixes" not in internal_state:
         internal_state["fixes"] = ""
     
-    # Allow only one validation cycle
-    return "generate_code" if current_count < 2 else "__end__"
+    # Route to test_contract after successful validation
+    # Store the current validation count for tracking retries
+    internal_state["validation_count"] = current_count + 1
+    
+    if current_count < 2:
+        # If we haven't reached the second validation yet, go back to generate_code
+        return "generate_code"
+    else:
+        # After reaching validation_count of 2, proceed to test_contract
+        # regardless of validation status
+        return "test_contract"
+
+def test_router(state: AgentState) -> str:
+    """
+    Route to end after test_contract completes.
+    The test_contract function handles all iterations internally.
+    """
+    return "__end__"
 
 def create_agent() -> StateGraph:
-    """Create the agent workflow with a linear flow and single validation cycle."""
+    """Create the agent workflow with a linear flow."""
     workflow = StateGraph(AgentState)
     
     # Add nodes
@@ -1072,6 +1941,7 @@ def create_agent() -> StateGraph:
     workflow.add_node("analyze_codebase", analyze_codebase)
     workflow.add_node("generate_code", generate_contract)
     workflow.add_node("validate", validate_contract)
+    workflow.add_node("test_contract", test_contract)
     
     # Set the entry point
     workflow.set_entry_point("analyze")
@@ -1088,9 +1958,13 @@ def create_agent() -> StateGraph:
         validation_router,
         {
             "generate_code": "generate_code",
-            "__end__": END  # Use "__end__" as key and END constant as value
+            "test_contract": "test_contract",
+            "__end__": END
         }
     )
+    
+    # Add edge from test_contract to END
+    workflow.add_edge("test_contract", END)
     
     return workflow.compile()
 

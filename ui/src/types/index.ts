@@ -9,7 +9,7 @@ export interface GeneratedFile {
 }
 
 export interface AgentResponse {
-  validate: {
+  test_contract: {
     generate: {
       _internal: {
         output: {
