@@ -91,9 +91,30 @@ Generate the following files with proper implementations:
 - Add helper methods
 
 5. Project File (ContractName.csproj):
-- Include necessary AELF package references
-- Set proper SDK version
-- Configure protobuf generation
+- IMPORTANT: Include ALL necessary AELF package references based on imports used in your code
+- Always use <TargetFramework>net8.0</TargetFramework> explicitly 
+- Add package references for all imported namespaces (e.g., if using AElf.Contracts.MultiToken, include the corresponding package reference)
+- Set SDK version to Microsoft.NET.Sdk
+- Configure protobuf generation with proper item groups
+- Include all necessary NuGet packages with specific versions
+- Here's a template to follow:
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <TargetFramework>net8.0</TargetFramework>
+        <!-- Other properties -->
+    </PropertyGroup>
+    <ItemGroup>
+        <!-- Add ALL package references based on what's imported in the code -->
+        <!-- Example: -->
+        <PackageReference Include="AElf.Sdk.CSharp" Version="1.5.0" />
+        <!-- If using MultiToken, include: -->
+        <PackageReference Include="AElf.Contracts.MultiToken" Version="1.5.0" />
+        <!-- Include all other necessary packages -->
+    </ItemGroup>
+    <!-- Protobuf configuration -->
+</Project>
+```
 
 Format each file in a separate code block with proper file path comment:
 ```csharp

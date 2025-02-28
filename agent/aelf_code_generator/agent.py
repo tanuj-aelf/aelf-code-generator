@@ -477,7 +477,7 @@ async def generate_proto_file_content(model, proto_file_path: str) -> str:
         ]
         
         # Use a shorter timeout for proto generation - these are smaller files
-        response = await model.ainvoke(messages, timeout=60)
+        response = await model.ainvoke(messages, timeout=300)
         content = response.content.strip()
         
         if not content or "```" in content:
@@ -769,7 +769,7 @@ Your insights will guide the code generation process.""")
             logger.info(f"[{request_id}] Invoking LLM for codebase analysis")
             start_time = time.time()
             
-            response = await model.ainvoke(messages, timeout=150)
+            response = await model.ainvoke(messages, timeout=300)
             insights = response.content.strip()
             
             analysis_time = time.time() - start_time
@@ -1009,7 +1009,7 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
 Analysis:
 {analysis}
 
-RAG Context:
+AElf sample dApps RAG Context:
 {rag_context}
 
 Please generate the complete smart contract implementation following AELF's project structure.
@@ -1019,7 +1019,7 @@ Please generate the complete smart contract implementation following AELF's proj
         
         try:
             # Set a longer timeout for code generation
-            response = await model.ainvoke(messages, timeout=180)  # 3 minutes timeout
+            response = await model.ainvoke(messages, timeout=300)  # 3 minutes timeout
             content = response.content
             
             if not content:
@@ -1243,6 +1243,61 @@ Please generate the complete smart contract implementation following AELF's proj
                         "file_type": "proto",
                         "path": import_path
                     })
+                    
+            # Check for MultiToken imports
+            multitoken_import_found = False
+            
+            # First check for direct imports in the proto file
+            for import_path in imports:
+                if "multitoken" in import_path.lower() or "token_contract" in import_path.lower():
+                    multitoken_import_found = True
+                    import_path = "token/token_contract.proto"
+                    full_path = f"src/Protobuf/reference/{import_path}"
+                    
+                    # Generate MultiToken proto content
+                    import_content = await generate_proto_file_content(model, import_path)
+                    
+                    # Add to additional files
+                    if import_content:
+                        additional_files.append({
+                            "content": import_content,
+                            "file_type": "proto",
+                            "path": full_path
+                        })
+                    
+                    break  # Only need to generate once
+            
+            # Also check for MultiToken references in C# code
+            contract_content = components["contract"].get("content", "")
+            state_content = components["state"].get("content", "")
+            reference_content = components["reference"].get("content", "")
+            
+            # Also check any additional contract files
+            additional_files_content = ""
+            for contract_file in contract_files:
+                additional_files_content += contract_file.get("content", "")
+            
+            # If any code file contains MultiToken references, generate the proto file
+            if (not multitoken_import_found and 
+                ("AElf.Contracts.MultiToken" in contract_content or 
+                 "AElf.Contracts.MultiToken" in state_content or 
+                 "AElf.Contracts.MultiToken" in reference_content or
+                 "AElf.Contracts.MultiToken" in additional_files_content)):
+                
+                # Generate the MultiToken proto file
+                import_path = "token/token_contract.proto"
+                full_path = f"src/Protobuf/reference/{import_path}"
+                
+                # Generate MultiToken proto content
+                import_content = await generate_proto_file_content(model, import_path)
+                
+                # Add to additional files
+                if import_content:
+                    additional_files.append({
+                        "content": import_content,
+                        "file_type": "proto",
+                        "path": full_path
+                    })
 
         # Create the output structure with metadata containing additional files
         output = {
@@ -1392,7 +1447,7 @@ For each issue found, provide specific suggestions on how to fix it. If no issue
         
         try:
             # Set timeout for validation
-            validation_response = await model.ainvoke(messages, timeout=120)
+            validation_response = await model.ainvoke(messages, timeout=300)
             validation_feedback = validation_response.content.strip()
             
             if not validation_feedback:
@@ -1519,7 +1574,7 @@ async def test_contract(state: AgentState) -> Dict:
     
     # Get or initialize the test cycle count
     test_cycle_count = internal_state.get("test_cycle_count", 0)
-    max_cycles = 2
+    max_cycles = 3
     
     while test_cycle_count < max_cycles:
         internal_state["test_cycle_count"] = test_cycle_count + 1
