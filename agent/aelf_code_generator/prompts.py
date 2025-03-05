@@ -12,7 +12,8 @@ __all__ = [
     "PROTO_GENERATION_PROMPT",
     "UI_GENERATION_PROMPT",
     "TESTING_PROMPT",
-    "DOCUMENTATION_PROMPT"
+    "DOCUMENTATION_PROMPT",
+    "CODE_ENHANCEMENT_PROMPT"
 ]
 
 # System prompt for general interactions
@@ -23,12 +24,15 @@ Your task is to help generate smart contract code based on the user's requiremen
 ANALYSIS_PROMPT = """You are an expert AELF smart contract developer. Your task is to analyze the dApp description and provide a detailed analysis.
 
 Analyze the requirements and identify:
+- Contract name (provide a meaningful name for the contract based on its purpose)
 - Contract type and purpose
 - Core features and functionality
 - Required methods and their specifications
 - State variables and storage needs
 - Events and their parameters
 - Access control and security requirements
+
+Your analysis MUST start with a section titled "Contract Name" that clearly states a single name for the contract (e.g., "Contract Name: TokenSwap").
 
 Provide a structured analysis that will be used to generate the smart contract code in the next step.
 Do not generate any code in this step, focus only on the analysis."""
@@ -251,4 +255,59 @@ Based on the contract implementation, create documentation that includes:
 6. Integration guidelines for other contracts/dApps
 7. Deployment instructions
 
-The documentation should be clear, concise, and follow best practices for technical documentation in the blockchain space.""" 
+The documentation should be clear, concise, and follow best practices for technical documentation in the blockchain space."""
+
+# Add CODE_ENHANCEMENT_PROMPT at the end of the file
+CODE_ENHANCEMENT_PROMPT = """You are an expert AELF blockchain developer tasked with enhancing a blank template AELF smart contract.
+Your job is to add functionality to the template based on the user's requirements.
+
+# AELF Project Structure (Tree Format):
+```
+{contract_name}-contract\
+|_src\
+    |_{contract_name}.csproj
+    |_{contract_name}.cs
+    |_{contract_name}State.cs
+    |_Protobuf\
+        |_contract\
+            |_{contract_name_lowercase}.proto
+        |_reference\
+           |_acs12.proto
+        |_message\
+           |_authority_info.proto
+```
+
+# AELF Implementation Guidelines:
+{implementation_guidelines}
+
+# AELF Coding Patterns:
+{coding_patterns}
+
+# AELF Project Structure:
+{project_structure}
+
+# Sample References:
+{sample_references}
+
+Follow these rules:
+1. IMPORTANT: You will be provided with template files that contain generic Hello World functionality. You MUST REPLACE this basic functionality with appropriate implementation for the required dApp.
+2. Maintain the core structure of each template file - keep the namespaces, class declarations, and base interfaces, but replace the methods and state variables.
+3. ADD methods, state variables, events, and other elements needed for the contract functionality based on the analysis.
+4. Ensure all added code follows AELF best practices and coding standards.
+5. When modifying a file, provide the COMPLETE file content with your enhancements integrated.
+6. Format your response with clear file markers: ```File: path/to/file.cs``` followed by the code.
+7. Be sure to implement all functionality described in the requirements.
+8. When updating the .proto file, maintain its structure and add new messages, services, and methods as needed.
+9. For the .csproj file, make sure to add any additional package references needed for the enhanced functionality.
+10. If errors or fixes are mentioned from previous validation, prioritize addressing those issues.
+
+Use this approach to transform the template:
+- For each file, understand its current structure and purpose
+- REPLACE the basic Read/Update methods with appropriate functionality for the specific dApp
+- Add new methods, state variables, events based on the dApp requirements
+- Preserve the namespace and class structure, but completely transform the implementation
+- Ensure the file remains syntactically valid after your changes
+- Update related files to maintain consistency
+
+Your response should contain complete file contents for each file you modify.
+""" 

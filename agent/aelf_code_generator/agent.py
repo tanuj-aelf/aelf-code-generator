@@ -31,17 +31,18 @@ from pathlib import Path
 import sys
 import asyncio
 from aelf_code_generator.prompts import (
-    SYSTEM_PROMPT,
-    CODE_GENERATION_PROMPT,
     CODEBASE_ANALYSIS_PROMPT,
-    UI_GENERATION_PROMPT,
-    TESTING_PROMPT,
-    DOCUMENTATION_PROMPT,
     ANALYSIS_PROMPT,
     VALIDATION_PROMPT,
-    PROTO_GENERATION_PROMPT
+    PROTO_GENERATION_PROMPT,
+    CODE_ENHANCEMENT_PROMPT
 )
 from openai import NotFoundError
+from langchain.output_parsers import PydanticOutputParser
+from langchain.prompts import PromptTemplate
+
+import logging
+from aelf_code_generator.templates import initialize_blank_template
 
 # Utility function to generate request IDs for tracking
 def get_request_id():
@@ -542,13 +543,25 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
         
         if not analysis:
             raise ValueError("Analysis generation failed - empty response")
+        
+        # Extract contract name from analysis
+        contract_name = "AELFContract"  # Default value
+        import re
+        contract_name_match = re.search(r"Contract Name:?\s*([\w]+)", analysis)
+        if contract_name_match:
+            contract_name = contract_name_match.group(1).strip()
+            logger.info(f"[{get_request_id()}] Extracted contract name: {contract_name}")
+        else:
+            logger.warning(f"[{get_request_id()}] Could not extract contract name from analysis, using default: {contract_name}")
             
         # Create internal state with analysis
         internal_state = state["generate"]["_internal"]
         internal_state["analysis"] = analysis
+        internal_state["contract_name"] = contract_name
         internal_state["output"] = {
             **internal_state.get("output", {}),
-            "analysis": analysis
+            "analysis": analysis,
+            "contract_name": contract_name
         }
         
         # Return command to move to next state
@@ -572,9 +585,11 @@ async def analyze_requirements(state: AgentState) -> Command[Literal["analyze_co
         # Create error state
         error_state = state["generate"]["_internal"]
         error_state["analysis"] = f"Error analyzing requirements: {str(e)}"
+        error_state["contract_name"] = "AELFContract"  # Default on error
         error_state["output"] = {
             **error_state.get("output", {}),
-            "analysis": f"Error analyzing requirements: {str(e)}"
+            "analysis": f"Error analyzing requirements: {str(e)}",
+            "contract_name": "AELFContract"
         }
         
         # Return error state
@@ -715,12 +730,13 @@ async def analyze_codebase(state: AgentState) -> Command[Literal["generate_code"
         # Format samples for prompt inclusion
         formatted_samples = format_code_samples_for_prompt(all_samples)
         
-        # Store retrieved samples in internal state
+        # Store retrieved samples in internal state (including full content)
         logger.info(f"[{request_id}] Storing {len(all_samples)} samples in internal state")
         internal_state["retrieved_samples"] = [{
             "source": sample["source"],
             "project": sample["project"],
-            "file_type": sample["file_type"]
+            "file_type": sample["file_type"],
+            "content": sample["content"]  # Store the full content
         } for sample in all_samples]
         
         # Generate codebase insights with improved prompt
@@ -783,111 +799,41 @@ Your insights will guide the code generation process.""")
             insights_summary = insights[:200] + "..." if len(insights) > 200 else insights
             logger.info(f"[{request_id}] Insights summary: {insights_summary}")
                 
-            # Split insights into sections
-            sections = insights.split("\n\n")
+            # Parse the structure into sections
+            insights_dict = parse_codebase_insights(insights)
             
-            # Extract sections based on headers
-            project_structure = ""
-            coding_patterns = ""
-            implementation_guidelines = insights  # Keep full response as guidelines
+            if not insights_dict:
+                logger.error(f"[{request_id}] Failed to parse insights from analysis response")
+                raise ValueError("Failed to parse insights from analysis response")
             
-            for i, section in enumerate(sections):
-                section_lower = section.lower()
-                if any(header in section_lower for header in ["project structure", "file structure", "organization"]):
-                    project_structure = section
-                    # Look ahead for subsections
-                    for next_section in sections[i+1:]:
-                        if not any(header in next_section.lower() for header in ["pattern", "guideline", "implementation"]):
-                            project_structure += "\n\n" + next_section
-                        else:
-                            break
-                elif any(header in section_lower for header in ["pattern", "practice", "common"]):
-                    coding_patterns = section
-                    # Look ahead for subsections
-                    for next_section in sections[i+1:]:
-                        if not any(header in next_section.lower() for header in ["guideline", "implementation", "structure"]):
-                            coding_patterns += "\n\n" + next_section
-                        else:
-                            break
-            
-            # Ensure we have content for each section
-            if not project_structure:
-                logger.warning(f"[{request_id}] No project structure section found, using default")
-                project_structure = """Standard AELF project structure:
-1. Main Contract Implementation (ContractName.cs)
-   - Inherits from ContractBase
-   - Contains contract logic
-   - Uses state management
-   - Includes documentation
-
-2. Contract State (ContractState.cs)
-   - Defines state variables
-   - Uses proper AELF types
-   - Includes documentation
-
-3. Protobuf Definitions (Protobuf/)
-   - contract/ - Interface
-   - message/ - Messages
-   - reference/ - References
-
-4. Contract References (ContractReferences.cs)
-   - Reference declarations
-   - Helper methods"""
-
-            if not coding_patterns:
-                logger.warning(f"[{request_id}] No coding patterns section found, using default")
-                coding_patterns = """Common AELF patterns:
-1. State Management
-   - MapState for collections
-   - SingletonState for values
-   - State initialization
-   - Access patterns
-
-2. Access Control
-   - Context.Sender checks
-   - Ownership patterns
-   - Authorization
-   - Least privilege
-
-3. Event Handling
-   - Event definitions
-   - State change events
-   - Event parameters
-   - Documentation
-
-4. Input Validation
-   - Parameter validation
-   - State validation
-   - Error messages
-   - Fail-fast approach
-
-5. Error Handling
-   - Exception types
-   - Error messages
-   - Edge cases
-   - AELF patterns"""
-                
-            # Create insights dictionary with extracted sections
-            insights_dict = {
-                "project_structure": project_structure,
-                "coding_patterns": coding_patterns,
-                "implementation_guidelines": implementation_guidelines
-            }
-            
-            # Store sample insights in the dictionary
-            if all_samples:
-                sample_insights = "\n\n".join([
-                    f"- {sample['source']} (from {sample['project']} project)" 
-                    for sample in all_samples[:5]  # Limit to top 5 samples
-                ])
-                insights_dict["sample_references"] = f"""Referenced Samples:
-{sample_insights}"""
-                logger.info(f"[{request_id}] Added {len(all_samples[:5])} sample references to insights")
-            
-            # Update internal state with insights
+            # Store the insights in the internal state
+            logger.info(f"[{request_id}] Storing codebase insights in internal state")
             internal_state["codebase_insights"] = insights_dict
             
-            logger.info(f"[{request_id}] Codebase analysis with RAG completed successfully")
+            # Format sample references for use in system message with FULL content
+            sample_references = ""
+            for sample in internal_state.get("retrieved_samples", []):
+                sample_source = sample.get("source", "unknown")
+                sample_project = sample.get("project", "unknown")
+                sample_content = sample.get("content", "")
+                
+                # Truncate content if too long
+                if len(sample_content) > 3000:
+                    sample_content = sample_content[:3000] + "\n...(truncated)..."
+                
+                sample_references += f"Referenced Sample:\n- {sample_source} (from {sample_project} project)\n\n```\n{sample_content}\n```\n\n"
+            
+            # Store the formatted sample references with FULL content
+            insights_dict["sample_references"] = sample_references
+            
+            # Store contract type in internal state for later use
+            if contract_type:
+                internal_state["contract_type"] = contract_type
+                
+            # Generate contract name from analysis if not already set
+            if "contract_name" not in internal_state or not internal_state["contract_name"]:
+                internal_state["contract_name"] = extract_contract_name(analysis, contract_type)
+                logger.info(f"[{request_id}] Generated contract name: {internal_state['contract_name']}")
             
             # Return command to move to next state
             return Command(
@@ -912,36 +858,18 @@ Your insights will guide the code generation process.""")
         if "generate" not in state or "_internal" not in state["generate"]:
             state["generate"] = {"_internal": get_default_state()["generate"]["_internal"]}
         
-        # Create error state with default insights
+        # Create error state with default contract name
         error_state = state["generate"]["_internal"]
-        error_msg = f"Error analyzing codebase: {str(e)}"
-        
         error_state["codebase_insights"] = {
-            "project_structure": """Standard AELF project structure:
-1. Contract class inheriting from AElfContract
-2. State class for data storage
-3. Proto files for interface definition
-4. Project configuration in .csproj""",
-            "coding_patterns": """Common AELF patterns:
-1. State management using MapState/SingletonState
-2. Event emission for status changes
-3. Authorization checks using Context.Sender
-4. Input validation with proper error handling""",
-            "implementation_guidelines": """Follow AELF best practices:
-1. Use proper base classes and inheritance
-2. Implement robust state management
-3. Add proper access control checks
-4. Include comprehensive input validation
-5. Emit events for important state changes
-6. Follow proper error handling patterns
-7. Add XML documentation for all public members"""
+            "project_structure": "## **1. Project Structure and Organization**\n\nError analyzing codebase.",
+            "coding_patterns": "## **2. Smart Contract Patterns**\n\nError analyzing codebase.",
+            "implementation_guidelines": "## **3. Implementation Guidelines**\n\nError analyzing codebase."
         }
+        error_state["contract_name"] = "AELFContract"  # Default name on error
         
-        logger.info("Using fallback insights due to error")
-        
-        # Return command to continue to generate even if codebase analysis fails
+        # Return error state
         return Command(
-            goto="generate_code",
+            goto="__end__",
             update={
                 "generate": {
                     "_internal": error_state
@@ -979,7 +907,8 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
         # Get model with state
         model = get_model(state)
         
-        # Prepare RAG context from codebase insights
+        # Prepare RAG context from codebase insights with full file contents
+        # Only include sample references in the system message, not in both places
         rag_context = f"""
 # AELF Project Structure
 {insights.get("project_structure", "")}
@@ -990,32 +919,170 @@ async def generate_contract(state: AgentState) -> Command[Literal["validate"]]:
 # AELF Implementation Guidelines
 {insights.get("implementation_guidelines", "")}
 
-# AELF Code Sample References
-{insights.get("sample_references", "")}
-
 # Previous Validation Issues and Fixes
 {fixes}
 """
         
-        # Generate code based on analysis and insights with RAG context
-        messages = [
-            SystemMessage(content=CODE_GENERATION_PROMPT.format(
-                implementation_guidelines=insights.get("implementation_guidelines", ""),
-                coding_patterns=insights.get("coding_patterns", ""),
-                project_structure=insights.get("project_structure", ""),
-                sample_references=insights.get("sample_references", "")
-            )),
-            HumanMessage(content=f"""
+        # Initialize with blank template if this is the first iteration
+        if validation_count == 0:
+            # Initialize components with the basic blank template structure
+            components = initialize_blank_template()
+            
+            # Get contract name from state instead of extraction
+            contract_name = internal_state.get("contract_name", "AELFContract")
+            
+            # Update all template files with the contract name
+            for component_key, component in components.items():
+                if isinstance(component, dict) and "contract_name" in component:
+                    component["contract_name"] = contract_name
+                elif isinstance(component, list) and component and isinstance(component[0], dict) and "contract_name" in component[0]:
+                    for item in component:
+                        item["contract_name"] = contract_name
+            
+            # Store components in internal state for iterative enhancement
+            internal_state["components"] = components
+            internal_state["contract_name"] = contract_name
+            
+            # Create a serialized version of the template contents to include in the prompt
+            # Make sure ALL files, including .csproj and reference files, are included
+            template_contents = ""
+            for component_key, component in components.items():
+                if component_key == "metadata":
+                    # Handle metadata files separately
+                    for metadata_file in component:
+                        if "path" in metadata_file and "content" in metadata_file:
+                            template_contents += f"\n\nFile: {metadata_file['path']}\n```\n{metadata_file['content']}\n```\n"
+                else:
+                    # Handle regular components
+                    if "path" in component and "content" in component:
+                        template_contents += f"\n\nFile: {component['path']}\n```\n{component['content']}\n```\n"
+            
+            # Parse the sample references to extract full code samples
+            sample_references = insights.get("sample_references", "")
+            
+            # Generate enhancement prompt for the blank template
+            messages = [
+                SystemMessage(content=CODE_ENHANCEMENT_PROMPT.format(
+                    implementation_guidelines=insights.get("implementation_guidelines", ""),
+                    coding_patterns=insights.get("coding_patterns", ""),
+                    project_structure=insights.get("project_structure", ""),
+                    sample_references=sample_references,  # Include full sample code content here
+                    contract_name=contract_name,
+                    contract_name_lowercase=contract_name.lower()
+                )),
+                HumanMessage(content=f"""
 Analysis:
 {analysis}
 
 AElf sample dApps RAG Context:
 {rag_context}
 
-Please generate the complete smart contract implementation following AELF's project structure.
-{f"This is iteration {validation_count + 1} of the code generation. Please incorporate the fixes suggested in the previous validation." if validation_count > 0 else ""}
+Project Tree Structure:
+```
+{contract_name}-contract\
+|_src\
+    |_{contract_name}.csproj
+    |_{contract_name}.cs
+    |_{contract_name}State.cs
+    |_Protobuf\
+        |_contract\
+            |_{contract_name.lower()}.proto
+        |_reference\
+           |_acs12.proto
+        |_message\
+           |_authority_info.proto
+```
+
+I have initialized a blank AELF contract template with the name {contract_name}.
+Below are the initial template files that need to be transformed into the requested dApp:
+
+{template_contents}
+
+IMPORTANT INSTRUCTIONS:
+1. COMPLETELY REPLACE the sample Read/Update methods with appropriate functionality for the dApp described in the analysis
+2. Define appropriate state variables, events, and methods based on the analysis
+3. Implement all the core features mentioned in the analysis
+4. Add proper security mechanisms and access controls
+5. Ensure interaction with other AELF contracts if needed (like token contracts)
+6. Return COMPLETE implementation for ALL files in the structure above, including .csproj and reference files
+7. Include proper namespaces and maintain project structure consistency across files
+
+The blank template contains generic Hello World functionality that MUST be completely replaced with appropriate implementation for the specific dApp requirements in the analysis.
+
+For each file, maintain the basic structure (namespaces, class definitions) but replace the internal implementation with appropriate code for the dApp described in the analysis.
 """)
-        ]
+            ]
+        else:
+            # For subsequent iterations, get the components from internal state
+            components = internal_state.get("components", {})
+            contract_name = internal_state.get("contract_name", "AELFContract")
+            
+            # Create a serialized version of the current component contents
+            current_contents = ""
+            for component_key, component in components.items():
+                if component_key == "metadata":
+                    # Handle metadata files separately
+                    for metadata_file in component:
+                        if "path" in metadata_file and "content" in metadata_file:
+                            current_contents += f"\n\nFile: {metadata_file['path']}\n```\n{metadata_file['content']}\n```\n"
+                else:
+                    # Handle regular components
+                    if "path" in component and "content" in component:
+                        current_contents += f"\n\nFile: {component['path']}\n```\n{component['content']}\n```\n"
+            
+            # Parse the sample references to extract full code samples
+            sample_references = insights.get("sample_references", "")
+            
+            # Generate enhancement prompt based on previous validation
+            messages = [
+                SystemMessage(content=CODE_ENHANCEMENT_PROMPT.format(
+                    implementation_guidelines=insights.get("implementation_guidelines", ""),
+                    coding_patterns=insights.get("coding_patterns", ""),
+                    project_structure=insights.get("project_structure", ""),
+                    sample_references=sample_references,  # Include full sample code content here
+                    contract_name=contract_name,
+                    contract_name_lowercase=contract_name.lower()
+                )),
+                HumanMessage(content=f"""
+Analysis:
+{analysis}
+
+AElf sample dApps RAG Context:
+{rag_context}
+
+Project Tree Structure:
+```
+{contract_name}-contract\
+|_src\
+    |_{contract_name}.csproj
+    |_{contract_name}.cs
+    |_{contract_name}State.cs
+    |_Protobuf\
+        |_contract\
+            |_{contract_name.lower()}.proto
+        |_reference\
+           |_acs12.proto
+        |_message\
+           |_authority_info.proto
+```
+
+This is iteration {validation_count + 1} of the code enhancement.
+Below are the current files that need to be fixed based on the previous validation:
+
+{current_contents}
+
+Please fix the following issues identified in the previous validation:
+{fixes}
+
+IMPORTANT INSTRUCTIONS:
+1. Address all validation issues while maintaining the core functionality of the dApp
+2. Ensure the code implements all features described in the analysis
+3. Make sure any remaining Hello World template functionality is completely replaced
+4. Keep all files consistent with each other
+5. Maintain proper namespaces, class definitions, and project structure
+6. Return COMPLETE implementation for ALL files in the structure above, including .csproj and reference files
+""")
+            ]
         
         try:
             # Set a longer timeout for code generation
@@ -1030,173 +1097,77 @@ Please generate the complete smart contract implementation following AELF's proj
             if not content:
                 raise ValueError("Code generation timed out and no partial response available")
                 
-        # Initialize components with empty CodeFile structures
-        empty_code_file = {"content": "", "file_type": "", "path": ""}
-        components = {
-            "contract": dict(empty_code_file),
-            "state": dict(empty_code_file),
-            "proto": dict(empty_code_file),
-            "reference": dict(empty_code_file),
-            "project": dict(empty_code_file)
-        }
+        # Parse the enhancement response and update components
+        updated_components = parse_enhancement_response(content, components, contract_name)
         
-        additional_files = []  # List to store additional files
+        # Update the internal state with the enhanced components
+        internal_state["components"] = updated_components
         
-        # Extract contract name from file paths or content
-        contract_name = None
-        lines = content.split("\n")
-        
-        # First try to find contract name from class definition
-        for line in lines:
-            if "public class" in line and "Contract" in line and ":" in line:
-                parts = line.split("public class")[1].strip().split(":")
-                potential_name = parts[0].strip().replace("Contract", "")
-                if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
-                    contract_name = potential_name
-                    break
-        
-        # If not found, try file paths
-        if not contract_name:
-            for line in lines:
-                if line.strip().startswith("//") and ".cs" in line and not any(x in line.lower() for x in ["state", "reference", "test"]):
-                    file_path = line.replace("// ", "").strip()
-                    if "/" in file_path:
-                        potential_name = file_path.split("/")[-1].replace(".cs", "")
-                        if potential_name and not any(x in potential_name.lower() for x in ["state", "reference", "test"]):
-                            contract_name = potential_name
-                            break
-        
-        # If still not found, use a default name
-        if not contract_name:
-            contract_name = "AELFContract"
+        # Create additional files list
+        additional_files = []
+        for file_key, file_data in updated_components.items():
+            if file_key not in ["contract", "state", "proto", "reference", "project"] and "path" in file_data and "content" in file_data:
+                additional_files.append(file_data)
+
+        # Ensure we're working with updated_components for the rest of the function
+        components = updated_components
+
+        # Handle potential field mapping differences
+        # Map 'csproj' to 'project' if needed
+        if "csproj" in components and "project" not in components:
+            components["project"] = components["csproj"]
             
-        # Store contract name in components for consistent usage
-        for component in components.values():
-            component["contract_name"] = contract_name
-            
-        # Function to update paths and content with contract name
-        def update_contract_name_references(content, path):
-            """Helper function to consistently update contract name references."""
-            if content:
-                content = content.replace("ContractName", contract_name)
-                content = content.replace("contractname", contract_name.lower())
-                content = content.replace("namespace ContractName", f"namespace {contract_name}")
-                
-            if path:
-                # Special handling for project file to ensure it's always named correctly
-                if path.endswith(".csproj"):
-                    path = f"src/{contract_name}.csproj"
-                else:
-                    path = path.replace("ContractName", contract_name)
-                    path = path.replace("contractname", contract_name.lower())
-                    
-            return content, path
+        # Map 'main_contract' to 'contract' if needed
+        if "main_contract" in components and "contract" not in components:
+            components["contract"] = components["main_contract"]
 
         # Initialize all file paths with correct names
-        components["project"]["path"] = f"src/{contract_name}.csproj"
-        components["contract"]["path"] = f"src/{contract_name}Contract.cs"
-        components["state"]["path"] = f"src/{contract_name}State.cs"
-        components["proto"]["path"] = f"src/Protobuf/contract/{contract_name.lower()}.proto"
-        components["reference"]["path"] = "src/ContractReference.cs"
+        # Check if components have the necessary keys before accessing them
+        if "project" in components:
+            components["project"]["path"] = f"src/{contract_name}.csproj"
+        else:
+            components["project"] = {"path": f"src/{contract_name}.csproj", "content": "", "file_type": "xml"}
+            
+        if "contract" in components:
+            components["contract"]["path"] = f"src/{contract_name}Contract.cs"
+        else:
+            components["contract"] = {"path": f"src/{contract_name}Contract.cs", "content": "", "file_type": "csharp"}
+            
+        if "state" in components:
+            components["state"]["path"] = f"src/{contract_name}State.cs"
+        else:
+            components["state"] = {"path": f"src/{contract_name}State.cs", "content": "", "file_type": "csharp"}
+            
+        if "proto" in components:
+            components["proto"]["path"] = f"src/Protobuf/contract/{contract_name.lower()}.proto"
+        else:
+            components["proto"] = {"path": f"src/Protobuf/contract/{contract_name.lower()}.proto", "content": "", "file_type": "proto"}
+            
+        if "reference" in components:
+            components["reference"]["path"] = "src/ContractReference.cs"
+        else:
+            components["reference"] = {"path": "src/ContractReference.cs", "content": "", "file_type": "csharp"}
+
+        # Set contract_name on all components if not already set
+        for component_key in ["contract", "state", "proto", "reference", "project"]:
+            if component_key in components and "contract_name" not in components[component_key]:
+                components[component_key]["contract_name"] = contract_name
 
         # Parse code blocks
-        current_component = None
-        current_content = []
-        in_code_block = False
-        current_file_type = ""
-        found_components = set()  # Track which components we've already found
-        contract_files = []  # Store all contract files (for multiple contract files)
+        # current_component = None
+        # current_content = []
+        # in_code_block = False
+        # current_file_type = ""
+        # found_components = set()  # Track which components we've already found
+        # contract_files = []  # Store all contract files (for multiple contract files)
         
-        for i, line in enumerate(content.split("\n")):
-            # Handle code block markers
-            if "```" in line:
-                if not in_code_block:
-                    # Start of code block - detect language and file path
-                    current_file_type = ""
-                    if "csharp" in line.lower():
-                        current_file_type = "csharp"
-                    elif "protobuf" in line.lower() or "proto" in line.lower():
-                        current_file_type = "proto"
-                    elif "xml" in line.lower():
-                        current_file_type = "xml"
-                    
-                    # Look for file path in next line
-                    if i + 1 < len(content.split("\n")):
-                        next_line = content.split("\n")[i + 1].strip()
-                        if next_line.startswith("//") or next_line.startswith("<!--"):
-                            file_path = (
-                                next_line.replace("// ", "")
-                                .replace("<!-- ", "")
-                                .replace(" -->", "")
-                                .strip()
-                            )
-                            
-                            # Map file path to component type
-                            if "State.cs" in file_path:
-                                current_component = "state"
-                            elif ".csproj" in file_path:
-                                current_component = "project"
-                            elif file_path.endswith(".cs") and "Reference" in file_path:
-                                current_component = "reference"
-                            elif ".proto" in file_path:
-                                current_component = "proto"
-                            elif file_path.endswith(".cs"):
-                                # Check if we've already found a contract component
-                                if "contract" in found_components:
-                                    # This is an additional contract file
-                                    current_component = f"additional_contract_{len(contract_files)}"
-                                    contract_files.append({
-                                        "content": "",
-                                        "file_type": current_file_type,
-                                        "path": file_path
-                                    })
-                                else:
-                                    current_component = "contract"
-                                    found_components.add("contract")
-                            
-                            if current_component:
-                                if current_component.startswith("additional_contract_"):
-                                    # For additional contract files, store the file path directly
-                                    idx = int(current_component.split("_")[-1])
-                                    contract_files[idx]["path"] = file_path
-                                else:
-                                    components[current_component]["file_type"] = current_file_type
-                else:
-                    # End of code block
-                    if current_component and current_content:
-                        code_content = "\n".join(current_content).strip()
-                        if current_component.startswith("additional_contract_"):
-                            # Store content for additional contract file
-                            idx = int(current_component.split("_")[-1])
-                            contract_files[idx]["content"] = code_content
-                        elif current_component in components:
-                            # Update content with contract name
-                            code_content, _ = update_contract_name_references(code_content, "")
-                            components[current_component]["content"] = code_content
-                    current_content = []
-                    current_component = None
-                in_code_block = not in_code_block
-                continue
-            
-            # Collect content if in a code block
-            if in_code_block and current_component:
-                # Skip the first line if it's a comment with the file path
-                if len(current_content) == 0 and (line.startswith("// ") or line.startswith("<!-- ")):
-                    if ("src/" in line or line.endswith(".cs") or line.endswith(".proto") or line.endswith(".csproj")):
-                        continue
-                current_content.append(line)
-
-        # Add all additional contract files to metadata
-        for contract_file in contract_files:
-            content, path = update_contract_name_references(contract_file["content"], contract_file["path"])
-            additional_files.append({
-                "content": content,
-                "file_type": contract_file["file_type"],
-                "path": path
-            })
-
-        # Check the proto file for AELF-specific imports and generate additional proto files
+        # The commented-out section for parsing code blocks from line markers is not needed
+        # as we already have the updated_components structure
+        
+        # Handle AELF-specific imports and generate additional proto files
         proto_content = components["proto"].get("content", "")
+        additional_files = []
+        
         if proto_content:
             # Parse the proto file for imports
             aelf_imports = []
@@ -1272,10 +1243,12 @@ Please generate the complete smart contract implementation following AELF's proj
             state_content = components["state"].get("content", "")
             reference_content = components["reference"].get("content", "")
             
-            # Also check any additional contract files
+            # Get any additional contract files from metadata if they exist
             additional_files_content = ""
-            for contract_file in contract_files:
-                additional_files_content += contract_file.get("content", "")
+            if "metadata" in components and isinstance(components["metadata"], list):
+                for metadata_item in components["metadata"]:
+                    if isinstance(metadata_item, dict) and "content" in metadata_item:
+                        additional_files_content += metadata_item.get("content", "")
             
             # If any code file contains MultiToken references, generate the proto file
             if (not multitoken_import_found and 
@@ -1299,6 +1272,15 @@ Please generate the complete smart contract implementation following AELF's proj
                         "path": full_path
                     })
 
+        # Preserve any existing metadata from updated_components
+        if "metadata" in components and isinstance(components["metadata"], list):
+            # Add existing metadata items to additional_files
+            for metadata_item in components["metadata"]:
+                if isinstance(metadata_item, dict):
+                    # Only add if it doesn't duplicate an existing file path
+                    if all(metadata_item.get("path", "") != af.get("path", "") for af in additional_files):
+                        additional_files.append(metadata_item)
+
         # Create the output structure with metadata containing additional files
         output = {
             "contract": components["contract"],
@@ -1313,7 +1295,7 @@ Please generate the complete smart contract implementation following AELF's proj
         # Remove commented filenames from the beginning of the content
         for component_key in ["contract", "state", "proto", "reference", "project"]:
             component = output[component_key]
-            content = component["content"]
+            content = component.get("content", "")
             
             # If content starts with a commented filename, remove it
             if content:
@@ -1324,10 +1306,17 @@ Please generate the complete smart contract implementation following AELF's proj
                 ):
                     component["content"] = "\n".join(lines[1:])
         
-        # Remove contract_name fields from components in the output
-        for component_key in ["contract", "state", "proto", "reference", "project"]:
-            if "contract_name" in output[component_key]:
-                del output[component_key]["contract_name"]
+        # Ensure contract_name field is preserved in components 
+        # This deviates from previous behavior but ensures contract_name is available for consumers
+        for component_key in output:
+            if component_key in components and "contract_name" in components[component_key]:
+                if component_key != "metadata" and isinstance(output[component_key], dict):
+                    output[component_key]["contract_name"] = components[component_key]["contract_name"]
+        
+        # Add contract_name to additional files in metadata if not present
+        for metadata_item in output["metadata"]:
+            if "contract_name" not in metadata_item and isinstance(metadata_item, dict):
+                metadata_item["contract_name"] = contract_name
         
         # Update internal state with output
         internal_state["output"] = output
@@ -1574,7 +1563,7 @@ async def test_contract(state: AgentState) -> Dict:
     
     # Get or initialize the test cycle count
     test_cycle_count = internal_state.get("test_cycle_count", 0)
-    max_cycles = 3
+    max_cycles = 2
     
     while test_cycle_count < max_cycles:
         internal_state["test_cycle_count"] = test_cycle_count + 1
@@ -2028,3 +2017,594 @@ graph = create_agent()
 
 # Export
 __all__ = ["graph", "get_default_state"] 
+
+def parse_enhancement_response(content, existing_components, contract_name):
+    """Parse the enhancement response and update the components."""
+    import re
+    import os
+    
+    # First, let's clean up the content if it's enclosed in quotes
+    if content.startswith("'") and content.endswith("'"):
+        content = content[1:-1]
+    
+    # Unescape newlines if they are escaped
+    content = content.replace("\\n", "\n")
+    
+    # Extract the code blocks from the content
+    # Try to find blocks with file headers like "### File: `src/LotteryGame.cs`"
+    file_blocks = re.findall(r'###\s*File:\s*`([^`]+)`\s*\n```(?:(\w+))?\s*(.*?)```', content, re.DOTALL)
+    
+    # Convert to (lang, path, content) format
+    file_blocks = [(lang if lang else determine_file_type(path), path, code.strip()) for path, lang, code in file_blocks]
+    
+    # If no file blocks found with the header format, look for standalone code blocks
+    if not file_blocks:
+        code_blocks = re.findall(r'```(\w+)?\s*(.*?)```', content, re.DOTALL)
+        processed_blocks = []
+        
+        # Process each code block and try to determine its file type and path
+        for lang, block in code_blocks:
+            if not lang:  # Skip blocks with no language specified
+                continue
+                
+            # Check for file path comments or indicators in the block
+            file_path_match = re.search(r'(?://|#)\s*File:\s*([\w\./]+)', block)
+            if file_path_match:
+                file_path = file_path_match.group(1)
+                # Remove the file path comment from the content
+                clean_content = re.sub(r'(?://|#)\s*File:\s*[\w\./]+\s*\n', '', block).strip()
+                processed_blocks.append((lang, file_path, clean_content))
+            else:
+                # Infer file path based on content patterns
+                if lang == "csharp":
+                    # Check if it's the main contract file (contains class that inherits from ContractBase)
+                    if f"class {contract_name}" in block and f"{contract_name}Container" in block:
+                        file_path = f"src/{contract_name}.cs"
+                    # Check if it's a state file
+                    elif "ContractState" in block:
+                        file_path = f"src/{contract_name}State.cs"
+                    # Check if it's a reference file
+                    elif "ReferenceState" in block:
+                        file_path = "src/ContractReference.cs"
+                    else:
+                        # Try to infer from other patterns
+                        if "State" in block and "class" in block:
+                            file_path = f"src/{contract_name}State.cs"
+                        else:
+                            file_path = f"src/{contract_name}.cs"
+                    processed_blocks.append((lang, file_path, block))
+                elif lang == "proto":
+                    # Check if it's the main contract proto file
+                    if f"service {contract_name}" in block:
+                        file_path = f"src/Protobuf/contract/{contract_name.lower()}.proto"
+                    else:
+                        # Check for reference or message proto files
+                        if "reference" in block.lower():
+                            file_path = f"src/Protobuf/reference/acs12.proto"
+                        else:
+                            file_path = f"src/Protobuf/message/authority_info.proto"
+                    processed_blocks.append((lang, file_path, block))
+                elif lang == "xml" and "Project" in block:
+                    file_path = f"src/{contract_name}.csproj"
+                    processed_blocks.append((lang, file_path, block))
+        
+        if processed_blocks:
+            file_blocks = processed_blocks
+    
+    # Create a dictionary to track files by content signature to avoid duplicates
+    content_hashes = {}
+    # Create a fresh dictionary for updated components
+    updated_components = {}
+    
+    # Special handling for proto files - identify the main contract proto
+    main_proto_file = None
+    for lang, file_path, file_content in file_blocks:
+        if lang == "proto" and ("service" in file_content and contract_name in file_content):
+            if "src/Protobuf/contract" in file_path:
+                main_proto_file = (lang, file_path, file_content)
+                break
+    
+    # Process file blocks and map them to the appropriate component types
+    for lang, file_path, file_content in file_blocks:
+        file_path = file_path.strip()
+        file_content = file_content.strip()
+        
+        # Skip empty content
+        if not file_content:
+            continue
+        
+        # Normalize file paths for consistency
+        if file_path.lower() == f"src/contractreferences.cs":
+            file_path = "src/ContractReference.cs"
+        
+        # Special case for proto files with underscores
+        if lang == "proto" and "contract" in file_path:
+            # Ensure consistent naming for proto files (handle both with underscore and without)
+            if "_" in file_path:
+                normalized_path = file_path
+            else:
+                base_name = os.path.basename(file_path)
+                dir_name = os.path.dirname(file_path)
+                normalized_name = contract_name.lower()
+                if "_" not in base_name:
+                    normalized_name = f"{normalized_name}.proto"
+                file_path = os.path.join(dir_name, normalized_name)
+        
+        # Determine file type if not provided
+        file_type = lang if lang else determine_file_type(file_path)
+        
+        # Create a simple hash of the content to detect duplicates
+        content_hash = hash(file_content)
+        if content_hash in content_hashes:
+            # Skip duplicate content, but ensure we're keeping the most appropriate component
+            continue
+        content_hashes[content_hash] = file_path
+        
+        # Determine the component key based on file path and content
+        component_key = determine_component_key(file_path, file_content, contract_name)
+        
+        # Special handling for main contract file
+        if "public class" in file_content and f": {contract_name}Container.{contract_name}Base" in file_content:
+            component_key = "main_contract"
+            file_path = f"src/{contract_name}.cs"
+        
+        # Handle proto file specifically - filter out the acs12.proto placeholder if we have a real proto file
+        if main_proto_file and component_key == "proto" and "Placeholder" in file_content:
+            # Skip placeholder proto if we have the real one
+            continue
+            
+        # Update the component
+        updated_components[component_key] = {
+            "content": file_content,
+            "file_type": file_type,
+            "path": file_path,
+            "contract_name": contract_name
+        }
+    
+    # Make sure the main proto file is included
+    if main_proto_file and "proto" not in updated_components:
+        lang, file_path, file_content = main_proto_file
+        updated_components["proto"] = {
+            "content": file_content,
+            "file_type": lang,
+            "path": file_path,
+            "contract_name": contract_name
+        }
+    
+    # Check for missing critical components
+    expected_components = ["main_contract", "state", "proto", "csproj"]
+    for component in expected_components:
+        if component not in updated_components:
+            # Try to find the component in the file blocks by analyzing content patterns
+            for lang, file_path, file_content in file_blocks:
+                if component == "main_contract" and f"public class {contract_name}" in file_content:
+                    updated_components["contract"] = {
+                        "content": file_content,
+                        "file_type": "csharp",
+                        "path": f"src/{contract_name}.cs",
+                        "contract_name": contract_name
+                    }
+                    break
+                elif component == "state" and "ContractState" in file_content:
+                    updated_components["state"] = {
+                        "content": file_content,
+                        "file_type": "csharp",
+                        "path": f"src/{contract_name}State.cs",
+                        "contract_name": contract_name
+                    }
+                    break
+                elif component == "proto" and "service" in file_content.lower() and contract_name in file_content:
+                    updated_components["proto"] = {
+                        "content": file_content,
+                        "file_type": "proto",
+                        "path": f"src/Protobuf/contract/{contract_name.lower()}.proto",
+                        "contract_name": contract_name
+                    }
+                    break
+                elif component == "csproj" and "Project" in file_content:
+                    updated_components["csproj"] = {
+                        "content": file_content,
+                        "file_type": "xml",
+                        "path": f"src/{contract_name}.csproj",
+                        "contract_name": contract_name
+                    }
+                    break
+    
+    # Additional check for proto file containing the main contract service
+    if "proto" in updated_components:
+        proto_content = updated_components["proto"]["content"]
+        if "Placeholder" in proto_content and not "service" in proto_content.lower():
+            # We have a placeholder - search for a better proto file
+            for lang, file_path, file_content in file_blocks:
+                if lang == "proto" and "service" in file_content.lower() and contract_name in file_content:
+                    updated_components["proto"] = {
+                        "content": file_content,
+                        "file_type": "proto",
+                        "path": f"src/Protobuf/contract/{contract_name.lower()}.proto",
+                        "contract_name": contract_name
+                    }
+                    break
+    
+    # Handle case when csproj file is not generated or is empty
+    if ("csproj" not in updated_components and "project" not in updated_components) or \
+       ("project" in updated_components and not updated_components["project"].get("content")):
+        # Check if we have a project template in existing components
+        if "project" in existing_components and existing_components["project"]["content"]:
+            # Use the existing project template but update the contract name
+            project_content = existing_components["project"]["content"]
+            project_content = project_content.replace("HelloWorld", contract_name)
+            project_content = project_content.replace("hello_world", contract_name.lower())
+            
+            updated_components["project"] = {
+                "content": project_content,
+                "file_type": "xml",
+                "path": f"src/{contract_name}.csproj",
+                "contract_name": contract_name
+            }
+    
+    # Only preserve metadata from existing components
+    if "metadata" in existing_components:
+        updated_components["metadata"] = existing_components["metadata"]
+    
+    return updated_components
+
+def determine_file_type(file_path):
+    """Determine the file type based on the file extension."""
+    if file_path.endswith(".cs"):
+        return "csharp"
+    elif file_path.endswith(".proto"):
+        return "proto"
+    elif file_path.endswith(".csproj"):
+        return "xml"
+    else:
+        return "text"
+
+def determine_component_key(file_path, file_content, contract_name):
+    """Determine which component key a file belongs to."""
+    import os
+    
+    file_name = os.path.basename(file_path)
+    
+    # Main contract file
+    if file_name == f"{contract_name}.cs":
+        return "main_contract"
+    
+    # State file
+    if file_name.endswith("State.cs"):
+        return "state"
+    
+    # References file - handle both naming conventions
+    if file_name in ["ContractReferences.cs", "ContractReference.cs"]:
+        return "reference"
+    
+    # Proto file for contract definition
+    if file_path.endswith(".proto"):
+        return "proto"
+    
+    # Project file
+    if file_path.endswith(".csproj"):
+        return "csproj"
+    
+    # For any other files, create an additional component
+    # Check if it's a proto message file
+    if file_path.endswith(".proto") and "message" in file_content.lower():
+        return "proto_message"
+    
+    # Default to an additional component
+    return f"additional_{os.path.basename(file_path).replace('.', '_')}"
+
+def parse_codebase_insights(content: str) -> Dict:
+    """Parse the LLM response into structured insights sections."""
+    import re
+    
+    logger.info("Parsing codebase insights from LLM response")
+    
+    # Initialize results dictionary
+    insights = {
+        "project_structure": "",
+        "coding_patterns": "",
+        "implementation_guidelines": "",
+        "sample_references": ""
+    }
+    
+    if not content or len(content.strip()) < 10:
+        logger.warning("Empty or very short content to parse")
+        return insights
+        
+    # Define regex patterns to match main sections with various heading formats
+    section_patterns = {
+        "project_structure": [
+            r'## \*\*1\. Project Structure and Organization\*\*\s*\n\n(.*?)(?=## \*\*\d+\.|$)',
+            r'## \*\*1\. Project Structure(?: and Organization)?\*\*\s*\n\n(.*?)(?=## \*\*\d+\.|$)',
+            r'### 1\. Project Structure(?: and Organization)?\s*\n\n(.*?)(?=### \d+\.|$)',
+            r'(?:###|##) (?:\d+\.)?\s*Project Structure(?: and Organization)?.*?(?:\n|$)(.*?)(?=(?:###|##)|$)',
+            r'#### 1\.\s*\*\*Project Structure(?: and Organization)?\*\*\s*\n\n(.*?)(?=#### \d+\.|$)',
+            r'#### 1\.\s*\*\*Project Structure(?: and Organization)?\*\*\s*\n\n(.*?)(?=---)',
+            r'#### \d+\.\s*\*\*Project Structure(?: and Organization)?\*\*\s*\n\n(.*?)(?=#### \d+\.|---)',
+        ],
+        "coding_patterns": [
+            r'## \*\*2\. Smart Contract Patterns\*\*\s*\n\n(.*?)(?=## \*\*\d+\.|$)',
+            r'### 2\. Smart Contract Patterns\s*\n\n(.*?)(?=### \d+\.|$)',
+            r'(?:###|##) (?:\d+\.)?\s*Smart Contract Patterns.*?(?:\n|$)(.*?)(?=(?:###|##)|$)',
+            r'#### 2\.\s*\*\*Smart Contract Patterns\*\*\s*\n\n(.*?)(?=#### \d+\.|$)',
+            r'#### 2\.\s*\*\*Smart Contract Patterns\*\*\s*\n\n(.*?)(?=---)',
+            r'#### \d+\.\s*\*\*Smart Contract Patterns\*\*\s*\n\n(.*?)(?=#### \d+\.|---)',
+        ],
+        "implementation_guidelines": [
+            r'## \*\*3\. Implementation Guidelines\*\*\s*\n\n(.*?)(?=## \*\*\d+\.|$)',
+            r'### 3\. Implementation Guidelines\s*\n\n(.*?)(?=### \d+\.|$)',
+            r'(?:###|##) (?:\d+\.)?\s*Implementation Guidelines.*?(?:\n|$)(.*?)(?=(?:###|##)|$)',
+            r'#### 3\.\s*\*\*Implementation Guidelines\*\*\s*\n\n(.*?)(?=#### \d+\.|$)',
+            r'#### 3\.\s*\*\*Implementation Guidelines\*\*\s*\n\n(.*?)(?=---)',
+            r'#### \d+\.\s*\*\*Implementation Guidelines\*\*\s*\n\n(.*?)(?=#### \d+\.|---)',
+        ]
+    }
+    
+    # Extract each section using the patterns
+    for section_key, patterns in section_patterns.items():
+        for pattern in patterns:
+            match = re.search(pattern, content, re.DOTALL)
+            if match and match.group(1) and len(match.group(1).strip()) > 10:
+                # Use the exact heading format from the prompt
+                if section_key == "project_structure":
+                    heading = "## **1. Project Structure and Organization**"
+                elif section_key == "coding_patterns":
+                    heading = "## **2. Smart Contract Patterns**"
+                elif section_key == "implementation_guidelines":
+                    heading = "## **3. Implementation Guidelines**"
+                else:
+                    heading = f"## **{section_key.replace('_', ' ').title()}**"
+                    
+                insights[section_key] = f"{heading}\n\n{match.group(1).strip()}"
+                logger.info(f"Successfully extracted {section_key} section with pattern: {pattern[:30]}...")
+                break
+    
+    # Special case for the LLM output format: "#### 2. **Smart Contract Patterns**"
+    if not insights["coding_patterns"] or len(insights["coding_patterns"].strip()) < 20:
+        # Try exact pattern search
+        pattern = r'#### 2\.\s+\*\*Smart Contract Patterns\*\*\s*(.*?)(?=---|\n\n#### 3\.)'
+        match = re.search(pattern, content, re.DOTALL)
+        if match:
+            section_content = match.group(1).strip()
+            insights["coding_patterns"] = f"## **2. Smart Contract Patterns**\n\n{section_content}"
+            logger.info("Successfully extracted coding patterns with exact pattern match")
+    
+    # If any sections are still missing, try additional fallback extraction methods
+    if not insights["coding_patterns"] or len(insights["coding_patterns"]) < 50:
+        # Try section-specific substring search if regex failed
+        if "Smart Contract Patterns" in content:
+            # Find section start
+            section_start = content.find("Smart Contract Patterns")
+            if section_start != -1:
+                # Look for next section or --- separator
+                next_section_start = content.find("Implementation Guidelines", section_start + 20)
+                if next_section_start == -1:
+                    next_section_start = content.find("---", section_start + 20)
+                
+                if next_section_start != -1:
+                    # Extract content between section start and next section
+                    section_content = content[section_start:next_section_start].strip()
+                    insights["coding_patterns"] = "## **2. Smart Contract Patterns**\n\n" + section_content
+                    logger.info("Extracted coding patterns using fallback substring method")
+    
+    # Try again with direct index for any sections still missing
+    if not insights["project_structure"] or len(insights["project_structure"]) < 50:
+        if "Project Structure" in content:
+            section_start = content.find("Project Structure")
+            if section_start != -1:
+                insights["project_structure"] = "## **1. Project Structure and Organization**\n\n" + content[section_start:].split("---")[0].strip()
+                logger.info("Extracted project structure using direct substring method")
+    
+    if not insights["implementation_guidelines"] or len(insights["implementation_guidelines"]) < 50:
+        if "Implementation Guidelines" in content:
+            section_start = content.find("Implementation Guidelines")
+            if section_start != -1:
+                insights["implementation_guidelines"] = "## **3. Implementation Guidelines**\n\n" + content[section_start:].split("---")[0].strip()
+                logger.info("Extracted implementation guidelines using direct substring method")
+    
+    # If a section wasn't found, try simple fallback extraction
+    for section_key in insights.keys():
+        if not insights[section_key]:
+            # Try to find any section with the key text
+            section_name = section_key.replace("_", " ").title()
+            section_idx = content.find(section_name)
+            
+            if section_idx != -1:
+                # Find the next section heading after this one
+                next_section_idx = content.find("###", section_idx + len(section_name))
+                
+                if next_section_idx != -1:
+                    section_content = content[section_idx:next_section_idx].strip()
+                else:
+                    section_content = content[section_idx:].strip()
+                
+                insights[section_key] = section_content
+                logger.info(f"Extracted {section_key} using fallback method")
+    
+    # Last resort: use the entire content if no sections were found
+    empty_sections = [k for k, v in insights.items() if not v]
+    if empty_sections and content:
+        logger.warning(f"Some sections could not be extracted: {empty_sections}")
+        
+        # If none of the sections were found, use generic versions
+        if len(empty_sections) == len(insights) - 1:  # All but sample_references
+            logger.warning("No sections found, using fallback content")
+            insights["project_structure"] = "# AELF Project Structure\nStandard AELF project structure with contract, state, and proto files."
+            insights["coding_patterns"] = "# AELF Coding Patterns\nCommon AELF patterns for state management, access control, and events."
+            insights["implementation_guidelines"] = content  # Use the whole content as implementation guidelines
+        
+        # If just some sections are missing, use parts of the content
+        else:
+            # Try to split content by sections
+            sections = content.split("##")
+            
+            if len(sections) >= 3:
+                # Fill in missing sections based on position
+                for i, section_key in enumerate(["project_structure", "coding_patterns", "implementation_guidelines"]):
+                    if not insights[section_key] and i + 1 < len(sections):
+                        insights[section_key] = f"## {sections[i + 1].strip()}"
+                        logger.info(f"Filled {section_key} using section split")
+    
+    # Ensure each section has some content
+    for section_key in insights.keys():
+        if not insights[section_key]:
+            insights[section_key] = f"# {section_key.replace('_', ' ').title()}\nNo specific {section_key} information available."
+            logger.warning(f"Using default text for {section_key}")
+    
+    return insights
+
+def extract_contract_features(analysis: str) -> List[str]:
+    """
+    Extract key features and capabilities from the contract analysis.
+    
+    Args:
+        analysis: The contract analysis text
+        
+    Returns:
+        List of extracted features
+    """
+    # If analysis is empty, return empty list
+    if not analysis:
+        return []
+    
+    import re
+    
+    # Common feature keywords to look for in the analysis
+    feature_keywords = [
+        "token", "nft", "lottery", "voting", "dao", "staking", "game", "auction", 
+        "marketplace", "exchange", "swap", "bridge", "governance", "wallet",
+        "oracle", "identity", "certification", "verification", "authentication",
+        "escrow", "crowdfunding", "fundraising", "payment", "dividend", "reward",
+        "betting", "gambling", "insurance", "loan", "lending", "borrowing", "banking",
+        "social network", "messaging", "chat", "forum", "blog", "content", "media",
+        "storage", "file sharing", "document", "credential", "certificate", "license",
+        "tracking", "supply chain", "logistics", "inventory", "asset", "property",
+        "real estate", "healthcare", "medical", "education", "learning", "certification",
+        "ticketing", "booking", "reservation", "subscription", "membership"
+    ]
+    
+    # Look for explicit features mentioned in the analysis
+    features = []
+    
+    # Check for Core Features section
+    core_features_match = re.search(r'Core Features.*?(?=###|$)', analysis, re.DOTALL | re.IGNORECASE)
+    if core_features_match:
+        core_features_text = core_features_match.group(0)
+        
+        # Look for numbered or bulleted feature lists
+        feature_items = re.findall(r'(?:\d+\.\s*\*\*|\-\s+\*\*|\d+\.\s+|•\s+)(.*?)(?:\*\*|:)(.*?)(?=\d+\.\s*\*\*|\-\s+\*\*|\d+\.\s+|•\s+|$)', 
+                                  core_features_text, re.DOTALL)
+        
+        for item in feature_items:
+            feature_name = item[0].strip()
+            if feature_name and len(feature_name) > 3:
+                features.append(feature_name)
+    
+    # Check for Features and Functionality section
+    if not features:
+        features_match = re.search(r'Features and Functionality.*?(?=###|$)', analysis, re.DOTALL | re.IGNORECASE)
+        if features_match:
+            features_text = features_match.group(0)
+            
+            # Look for feature items
+            feature_items = re.findall(r'(?:\d+\.\s*|\-\s+|\*\s+|•\s+)(.*?)(?::|$)', features_text, re.DOTALL)
+            
+            for item in feature_items:
+                feature_name = item.strip()
+                if feature_name and len(feature_name) > 3:
+                    features.append(feature_name)
+    
+    # If no explicit features found, use keyword matching
+    if not features:
+        analysis_lower = analysis.lower()
+        for keyword in feature_keywords:
+            if keyword in analysis_lower:
+                # Extract the sentence or phrase containing the keyword
+                sentences = re.findall(r'[^.!?]*' + re.escape(keyword) + r'[^.!?]*[.!?]', analysis_lower)
+                if sentences:
+                    # Use the first sentence containing the keyword
+                    sentence = sentences[0].strip()
+                    # Extract a more focused feature description
+                    feature_phrase = re.search(r'(?:[a-z]+\s+){0,3}' + re.escape(keyword) + r'(?:\s+[a-z]+){0,3}', sentence)
+                    if feature_phrase:
+                        features.append(feature_phrase.group(0))
+                    else:
+                        features.append(keyword)
+                else:
+                    features.append(keyword)
+    
+    # Deduplicate and clean up features
+    cleaned_features = []
+    seen_features = set()
+    
+    for feature in features:
+        # Clean up the feature text
+        feature = feature.strip().lower()
+        feature = re.sub(r'[\r\n\t]', ' ', feature)
+        feature = re.sub(r'\s+', ' ', feature)
+        
+        # Skip very short features or features we've seen
+        if len(feature) < 3 or feature in seen_features:
+            continue
+            
+        cleaned_features.append(feature)
+        seen_features.add(feature)
+    
+    # Limit to top 5 features to avoid having too many
+    return cleaned_features[:5]
+
+def extract_contract_name(analysis: str, contract_type: Optional[str] = None) -> str:
+    """
+    Extract a suitable contract name from the analysis and contract type.
+    
+    Args:
+        analysis: The contract analysis text
+        contract_type: The identified contract type, if available
+        
+    Returns:
+        A suitable contract name
+    """
+    import re
+    
+    # Look for explicit contract name in the analysis
+    contract_name_match = re.search(r'(?:Contract Name|Name|Title):\s*([A-Za-z0-9]+(?:[A-Za-z0-9]+)*)', analysis, re.IGNORECASE)
+    if contract_name_match:
+        name = contract_name_match.group(1).strip()
+        # Ensure name follows C# naming conventions (PascalCase)
+        if name and name[0].islower():
+            name = name[0].upper() + name[1:]
+        return name
+    
+    # Look for contract name in the title
+    title_match = re.search(r'^(?:# |### |## )([A-Za-z0-9]+(?:[A-Za-z0-9\s]+)*?)(?:Contract)?\s*$', analysis, re.MULTILINE | re.IGNORECASE)
+    if title_match:
+        name = title_match.group(1).strip()
+        # Convert to PascalCase and remove spaces
+        name = ''.join(word.capitalize() for word in name.split())
+        # Add "Contract" suffix if not already included
+        if not name.endswith("Contract"):
+            name += "Contract"
+        return name
+    
+    # Look for a contract type or description in the beginning of the analysis
+    if contract_type:
+        # Convert the contract type to a valid contract name
+        words = re.findall(r'[a-zA-Z]+', contract_type)
+        if words:
+            name = ''.join(word.capitalize() for word in words)
+            # Add "Contract" suffix if not already included
+            if not name.endswith("Contract"):
+                name += "Contract"
+            return name
+    
+    # If no name could be extracted, use the first 3 words of the analysis as a fallback
+    words = re.findall(r'[a-zA-Z]+', analysis)
+    if words:
+        name = ''.join(word.capitalize() for word in words[:3])
+        # Add "Contract" suffix if not already included
+        if not name.endswith("Contract"):
+            name += "Contract"
+        return name
+    
+    # If all else fails, use a generic name
+    return "AELFContract"
