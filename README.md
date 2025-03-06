@@ -2,6 +2,9 @@
 
 An AI-powered code generator for the AElf ecosystem, built with Next.js, CopilotKit, and Langgraph.
 
+<img width="1728" alt="Screenshot 2025-03-06 at 12 48 05 PM" src="https://github.com/user-attachments/assets/ecd0aa71-9925-4b46-ae02-99ca866f5932" />
+<img width="1725" alt="Screenshot 2025-03-06 at 12 47 52 PM" src="https://github.com/user-attachments/assets/df9a5c2d-fed6-401c-8ede-6c76394c2234" />
+
 ## Features
 
 - AI-powered code generation for smart contracts and dApps
