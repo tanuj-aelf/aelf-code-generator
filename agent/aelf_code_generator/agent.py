@@ -114,14 +114,6 @@ logger.info(f"RAG Config: {RAG_CONFIG}")
 # Define the internal state type with annotation for multiple updates
 InternalStateType = Annotated[Dict, "internal"]
 
-# Note: When using gemini-2.0-flash, system messages are converted to human messages
-# This is handled by the ChatGoogleGenerativeAI class with convert_system_message_to_human=True
-
-# Track RAG data indexing status to avoid reindexing for each run
-_RAG_INDEX_INITIALIZED = False
-_RAG_VECTOR_STORE = None
-_RAG_FILE_CACHE = {}
-
 def get_embeddings() -> Embeddings:
     """Get the embeddings model for RAG."""
     import os
@@ -1925,7 +1917,8 @@ async def test_contract(state: AgentState) -> Dict:
                 "fixes": internal_state.get("fixes", ""),  # Keep fixes information
                 "codebase_insights": internal_state.get("codebase_insights", {}),  # Keep codebase insights
                 "test_results": internal_state.get("test_results", {}),  # Keep test results
-                "validation_results": internal_state.get("validation_result", {})  # Keep validation results
+                "validation_results": internal_state.get("validation_result", {}),  # Keep validation results
+                "contract_name": internal_state.get("contract_name", "")  # Keep contract name
             }
         }
     }

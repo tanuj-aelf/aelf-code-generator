@@ -12,6 +12,7 @@ export interface AgentResponse {
   test_contract: {
     generate: {
       _internal: {
+        contract_name: string;
         output: {
           reference: any;
           contract: GeneratedFile;

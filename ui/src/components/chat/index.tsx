@@ -21,7 +21,7 @@ export const ChatWindow = ({ fullScreen = false }: ChatWindowProps) => {
       onSuccess: async (data: AgentResponse) => {
         const allFiles: FileContent[] = extractFiles(data);
         updateFiles(allFiles);
-        await saveWorkspaceData(workspaces?.length ?? 0, allFiles);
+        await saveWorkspaceData(workspaces?.length ?? 0, allFiles, data);
       },
     });
 
@@ -66,8 +66,9 @@ const extractFiles = (data: AgentResponse): FileContent[] => {
     .map((file) => ({ path: file.path, contents: file.content }));
 };
 
-const saveWorkspaceData = async (workspaceCount: number, allFiles: FileContent[]) => {
-  const workspace = `project-${workspaceCount + 1}`;
+const saveWorkspaceData = async (workspaceCount: number, allFiles: FileContent[], data: AgentResponse) => {
+  const contractName = data.test_contract?.generate._internal.contract_name || '';
+  const workspace = contractName ? contractName : `project-${workspaceCount + 1}`;
   await db.workspaces.add({ name: workspace, template: "", dll: "" });
   await db.files.bulkAdd(
     allFiles.map(({ path, contents }) => ({ path: `/workspace/${workspace}/${path}`, contents }))
