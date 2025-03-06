@@ -289,6 +289,115 @@ Your job is to add functionality to the template based on the user's requirement
 # Sample References:
 {sample_references}
 
+# CRITICAL BUILD REQUIREMENTS:
+
+## Project File (.csproj) Configuration
+- ALWAYS use the correct target framework: `net8.0`
+- Include these EXACT package references with CORRECT versions:
+  ```xml
+  <PackageReference Include="AElf.Sdk.CSharp" Version="1.10.0" />
+  <PackageReference Include="Google.Protobuf" Version="3.27.2" />
+  <PackageReference Include="AElf.Tools" Version="1.0.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+  </PackageReference>
+  ```
+- ALWAYS include the ProtoGeneratedRecognition target:
+  ```xml
+  <PropertyGroup>
+      <ObjPath>$(MSBuildProjectDirectory)/$(BaseIntermediateOutputPath)$(Configuration)/$(TargetFramework)/</ObjPath>
+  </PropertyGroup>
+  <Target Name="ProtoGeneratedRecognition" AfterTargets="CoreCompile">
+      <ItemGroup>
+          <Compile Include="$(ObjPath)Protobuf/**/*.cs" />
+      </ItemGroup>
+  </Target>
+  ```
+- ALWAYS enable overflow checking:
+  ```xml
+  <CheckForOverflowUnderflow>true</CheckForOverflowUnderflow>
+  ```
+
+## Protobuf File Requirements
+- ALWAYS include these elements:
+  - `syntax = "proto3";`
+  - Correct namespace: `option csharp_namespace = "AElf.Contracts.{contract_name}";`
+  - State class link: `option (aelf.csharp_state) = "AElf.Contracts.{contract_name}.{contract_name}State";`
+  - Required imports:
+    ```protobuf
+    import "aelf/core.proto";
+    import "aelf/options.proto";
+    import "google/protobuf/empty.proto";
+    import "google/protobuf/wrappers.proto";
+    import "google/protobuf/timestamp.proto";
+    ```
+- Mark view methods with `option (aelf.is_view) = true;`
+- Mark events with `option (aelf.is_event) = true;`
+
+## State Class Design
+- Use appropriate state types:
+  - `SingletonState<T>` for single values
+  - `MappedState<TKey, TValue>` for key-value mappings
+  - `BoolState`, `StringState`, etc. for primitive types
+- For collections that need to be enumerated, ALWAYS maintain a separate list of keys:
+  ```csharp
+  // Store keys separately
+  public SingletonState<List<string>> AssetSymbols {{ get; set; }}
+  
+  // Initialize in Initialize method
+  State.AssetSymbols.Value = new List<string>();
+  
+  // Add key when adding to MappedState
+  if (!State.AssetSymbols.Value.Contains(symbol))
+  {{
+      State.AssetSymbols.Value.Add(symbol);
+  }}
+  
+  // Iterate using the keys
+  foreach (var symbol in State.AssetSymbols.Value)
+  {{
+      var value = State.SupportedAssets[symbol];
+      // Process value
+  }}
+  ```
+
+## Type Safety and Compatibility
+- Use `long` for token amounts, NOT `double` or floating-point types
+- Use explicit casts when converting between numeric types
+- For decimal values, use integers with a scaling factor:
+  ```csharp
+  private const int FACTOR_SCALE = 10000; // Scale for percentage values (e.g., 0.75 = 7500)
+  ```
+- Use `Address.FromBase58(string)` and `address.ToBase58()` for address conversion
+
+## Error Handling and Validation
+- Use Assert statements for validation:
+  ```csharp
+  Assert(amount > 0, "Amount must be positive");
+  Assert(Context.Sender == State.Admin.Value, "Only admin can perform this operation");
+  ```
+- Implement reentrancy protection where needed:
+  ```csharp
+  Assert(!State.OperationInProgress.Value, "Operation already in progress");
+  State.OperationInProgress.Value = true;
+  
+  try {{
+      // Operation logic
+  }}
+  finally {{
+      State.OperationInProgress.Value = false;
+  }}
+  ```
+
+## RESTRICTED ELEMENTS (DO NOT USE):
+- `System.Text.Json` (not allowed in AElf contracts)
+- `double` type (use `int` or `long` with appropriate scaling)
+- `DateTime.UtcNow` and other time-related methods
+- `BitConverter` methods
+- `GetHashCode()` outside of GetHashCode methods
+- Complex LINQ operations
+- Floating-point operations
+
 Follow these rules:
 1. IMPORTANT: You will be provided with template files that contain generic Hello World functionality. You MUST REPLACE this basic functionality with appropriate implementation for the required dApp.
 2. Maintain the core structure of each template file - keep the namespaces, class declarations, and base interfaces, but replace the methods and state variables.
@@ -300,6 +409,11 @@ Follow these rules:
 8. When updating the .proto file, maintain its structure and add new messages, services, and methods as needed.
 9. For the .csproj file, make sure to add any additional package references needed for the enhanced functionality.
 10. If errors or fixes are mentioned from previous validation, prioritize addressing those issues.
+11. ALWAYS initialize collections in the Initialize method, not in the state declaration.
+12. ALWAYS emit events after state changes to record important contract actions.
+13. ALWAYS validate inputs before performing operations.
+14. NEVER use MappedState in a foreach loop directly - maintain a separate list of keys.
+15. ALWAYS include an Initialize method that sets up the contract state.
 
 Use this approach to transform the template:
 - For each file, understand its current structure and purpose
