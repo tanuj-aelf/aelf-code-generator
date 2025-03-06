@@ -1,6 +1,6 @@
 # AElf Code Generator
 
-An AI-powered code generator for the AElf ecosystem, built with Next.js, CopilotKit, and OpenAI.
+An AI-powered code generator for the AElf ecosystem, built with Next.js, CopilotKit, and Langgraph.
 
 ## Features
 
@@ -13,6 +13,7 @@ An AI-powered code generator for the AElf ecosystem, built with Next.js, Copilot
 
 - Node.js 18+ and npm
 - OpenAI API key
+- Gemini API key
 
 ## Setup
 
@@ -44,11 +45,32 @@ An AI-powered code generator for the AElf ecosystem, built with Next.js, Copilot
    LANGSMITH_API_KEY="lsv2_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
    LANGSMITH_PROJECT="ai-code-generator"
    ```
-4. Run the development server:
+4. Set up and run the agent:
    ```bash
+   # Navigate to the agent directory
+   cd agent
+   
+   # Create virtual environment
+   python3 -m venv venv
+   source venv/bin/activate
+   
+   # Install dependencies
+   pip install -e .
+   
+   # Run the agent
+   python3 -m aelf_code_generator
+   ```
+
+5. Run the UI development server:
+   ```bash
+   # Return to the root directory
+   cd ../ui
+   
+   # Start the Next.js server
    npm run dev
    ```
-5. Open [http://localhost:3000](http://localhost:3000) in your browser
+
+6. Open [http://localhost:3000](http://localhost:3000) in your browser
 
 ## Technology Stack
 
@@ -56,8 +78,7 @@ An AI-powered code generator for the AElf ecosystem, built with Next.js, Copilot
 - TypeScript
 - Tailwind CSS
 - CopilotKit
-- OpenAI API
-- Vercel Analytics
+- Gemini embedding withOpenAI API
 
 ## License
 
