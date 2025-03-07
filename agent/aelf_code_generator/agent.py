@@ -2237,7 +2237,20 @@ def parse_enhancement_response(content, existing_components, contract_name):
     
     # Only preserve metadata from existing components
     if "metadata" in existing_components:
-        updated_components["metadata"] = existing_components["metadata"]
+        # Create a deep copy of metadata to avoid modifying the original
+        metadata_files = []
+        for metadata_file in existing_components["metadata"]:
+            # Create a copy of the metadata file
+            metadata_copy = metadata_file.copy()
+            
+            # Update content with proper contract name if needed
+            if "content" in metadata_copy:
+                metadata_copy["content"] = metadata_copy["content"].replace("HelloWorld", contract_name)
+                metadata_copy["content"] = metadata_copy["content"].replace("hello_world", contract_name.lower())
+            
+            metadata_files.append(metadata_copy)
+        
+        updated_components["metadata"] = metadata_files
     
     return updated_components
 
